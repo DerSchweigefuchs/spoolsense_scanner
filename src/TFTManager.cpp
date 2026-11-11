@@ -438,11 +438,15 @@ void TFTManager::processQueue() {
     // Scan indicator: animate while the field is on, wipe once on release.
     if ((kTftCompactOnly || _compact) && _began) {
         const unsigned long now = millis();
-        if (scanHeld && now - _lastScanFxMs >= SCAN_FX_FRAME_MS) {
+        // Hold-to-scan: animate while held (field on). Continuous: animate
+        // while a tag sits in the field.
+        const bool fxOn = SCAN_BUTTON_HOLD_TO_SCAN ? scanHeld
+                                                   : NFCManager::getInstance().isTagInField();
+        if (fxOn && now - _lastScanFxMs >= SCAN_FX_FRAME_MS) {
             _lastScanFxMs = now;
             SharedSPIBus::Guard g(pdMS_TO_TICKS(20));  // skip a frame rather than stall NFC
             if (g) drawScanIndicator(now);
-        } else if (!scanHeld && _scanFxShown) {
+        } else if (!fxOn && _scanFxShown) {
             SharedSPIBus::Guard g;
             if (g) clearScanIndicator();
         }
@@ -1174,7 +1178,7 @@ void TFTManager::drawReadyCompact(LGFX_Sprite& canvas, int yOffset) {
     canvas.setTextSize(1);
     canvas.setTextDatum(MC_DATUM);
     canvas.setTextColor(COLOR_SUBTEXT);
-#if PIN_SCAN_BUTTON >= 0
+#if PIN_SCAN_BUTTON >= 0 && SCAN_BUTTON_HOLD_TO_SCAN
     canvas.drawString("Hold button and", kCompactW / 2, Y(130));
     canvas.drawString("tap a spool", kCompactW / 2, Y(142));
 #else

@@ -269,7 +269,7 @@
   // button works as-is and an external button can be wired in parallel. It is
   // only sampled after boot (internal pull-up), so the strap stays HIGH at POR
   // unless the button is held — which intentionally enters download mode.
-  // Override with -DPIN_SCAN_BUTTON=-1 for continuous (ungated) scanning.
+  // Disable with -DPIN_SCAN_BUTTON=-1.
   #ifndef PIN_SCAN_BUTTON
   #define PIN_SCAN_BUTTON  9
   #endif
@@ -351,8 +351,13 @@
   #define PIN_TFT_BL       -1
 #endif
 
-// Optional hold-to-scan button (active LOW). When >= 0 the NFC field is only
-// powered while the button is held; -1 = continuous polling (default).
+// Optional scan button (active LOW), -1 = none. Scanning stays continuous;
+// a press wakes the TFT and re-reads the tag on the reader (fresh Spoolman
+// data). With SCAN_BUTTON_HOLD_TO_SCAN=1 the NFC field is instead only
+// powered while the button is held.
 #ifndef PIN_SCAN_BUTTON
   #define PIN_SCAN_BUTTON  -1
+#endif
+#ifndef SCAN_BUTTON_HOLD_TO_SCAN
+  #define SCAN_BUTTON_HOLD_TO_SCAN  0
 #endif

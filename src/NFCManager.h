@@ -209,7 +209,8 @@ private:
     char selectedUidHex_[17] = {0};
     uint8_t absentMisses_ = 0;
     bool scanGateEnabled_ = false;   // hold-to-scan button (PIN_SCAN_BUTTON) active
-    bool gateRfOff_ = false;         // field already switched off while released               // consecutive failed detects while a tag was present
+    bool gateRfOff_ = false;         // field already switched off while released
+    bool buttonWasDown_ = false;     // press-edge detection (re-read mode)               // consecutive failed detects while a tag was present
     static constexpr uint8_t TAG_ABSENT_MISS_THRESHOLD = 3;  // ~150ms at 50ms poll before declaring removal
 
     // Recent spools history (RAM only, most recent first)

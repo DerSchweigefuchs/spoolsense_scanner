@@ -793,8 +793,8 @@ void NFCManager::scanLoop() {
     connection_->logDiagnostics();
 
 #if PIN_SCAN_BUTTON >= 0 && !defined(NATIVE_TEST)
-    // Hold-to-scan: the RF field is only on while the button is held. Skipped
-    // when the button GPIO is an I2C line of an enabled LCD (C3: GPIO 9 = SCL).
+    // Scan button (see BoardPins.h). Skipped when the button GPIO is an I2C
+    // line of an enabled LCD (C3: GPIO 9 = SCL).
     {
         const auto& cfg = ConfigurationManager::getInstance();
         const bool pinIsLcd = cfg.isLcdEnabled() && !cfg.isTftEnabled() &&
@@ -802,7 +802,8 @@ void NFCManager::scanLoop() {
         scanGateEnabled_ = !pinIsLcd;
         if (scanGateEnabled_) {
             pinMode(PIN_SCAN_BUTTON, INPUT_PULLUP);
-            Serial.printf("NFCManager: hold-to-scan on GPIO %d\n", PIN_SCAN_BUTTON);
+            Serial.printf("NFCManager: scan button on GPIO %d (%s)\n", PIN_SCAN_BUTTON,
+                          SCAN_BUTTON_HOLD_TO_SCAN ? "hold-to-scan" : "press = re-read");
         }
     }
 #endif
@@ -828,6 +829,7 @@ void NFCManager::scanLoop() {
             scanPaused_ = false;
         }
 #if PIN_SCAN_BUTTON >= 0 && !defined(NATIVE_TEST)
+    #if SCAN_BUTTON_HOLD_TO_SCAN
         // Button released: field off, tag state frozen (the display keeps the
         // last spool; queued writes wait for the next press).
         if (scanGateEnabled_ && digitalRead(PIN_SCAN_BUTTON) == HIGH) {
@@ -846,6 +848,19 @@ void NFCManager::scanLoop() {
             absentMisses_ = 0;
         }
         gateRfOff_ = false;
+    #else
+        // Continuous scanning; a press (edge) forgets the current tag so the
+        // next cycle re-reads it and refreshes its Spoolman data on screen.
+        if (scanGateEnabled_) {
+            const bool down = digitalRead(PIN_SCAN_BUTTON) == LOW;
+            if (down && !buttonWasDown_) {
+                Serial.println("NFCManager: scan button — re-reading tag");
+                handleTagAbsent();
+                absentMisses_ = 0;
+            }
+            buttonWasDown_ = down;
+        }
+    #endif
 #endif
         SCAN_PHASE(1);
         uint8_t uid[8];
