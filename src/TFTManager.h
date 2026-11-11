@@ -166,12 +166,6 @@ private:
     void drawKeypadCompact(LGFX_Sprite& canvas, int yOffset, const char* toolNumber);
     // Centered text that wraps once at a space when wider than maxW.
     void drawWrappedCompact(LGFX_Sprite& canvas, const char* text, int cx, int y, int maxW);
-    // Animated "field on" indicator in the compact layout's free bottom band,
-    // shown while the hold-to-scan button is pressed. Draws straight to the
-    // panel through a small persistent sprite; call under the bus guard.
-    void drawScanIndicator(uint32_t nowMs);
-    void clearScanIndicator();
-
     // --- Drawing helpers (y arrives already band-translated by the caller) ---
     void drawWeightBar(LGFX_Sprite& canvas, int x, int y, int w, int h,
                        float remaining, float total);
@@ -202,9 +196,6 @@ private:
     // buffer: vTaskDelete does not unwind the render task's stack, so a kill
     // landing mid-frame would otherwise leak the allocation.
     LGFX_Sprite _strip;
-    LGFX_Sprite _scanFx;            // 128x12 scan-indicator band (compact only, while held)
-    bool _scanFxShown = false;
-    unsigned long _lastScanFxMs = 0;
     TFTDriver _driver;
     TFTDashboard _dashboard;
 
@@ -239,7 +230,6 @@ private:
     static constexpr uint32_t DEFAULT_SCREEN_TIMEOUT_MS = 30000;
     static constexpr uint32_t BREATH_STEP_MS = 20;
     static constexpr uint32_t STATUS_REFRESH_MS = 4000;  // idle status-bar redraw interval
-    static constexpr uint32_t SCAN_FX_FRAME_MS = 40;     // scan-indicator animation (~25 fps)
 };
 
 #endif // BOARD_NO_TFT
