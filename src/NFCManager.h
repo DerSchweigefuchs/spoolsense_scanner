@@ -203,7 +203,9 @@ private:
     // currentSpool.spool_id this is refreshed even when the cooldown dedup
     // skips handleNewTag(), which is the whole point of #276.
     char selectedUidHex_[17] = {0};
-    uint8_t absentMisses_ = 0;               // consecutive failed detects while a tag was present
+    uint8_t absentMisses_ = 0;
+    bool scanGateEnabled_ = false;   // hold-to-scan button (PIN_SCAN_BUTTON) active
+    bool gateRfOff_ = false;         // field already switched off while released               // consecutive failed detects while a tag was present
     static constexpr uint8_t TAG_ABSENT_MISS_THRESHOLD = 3;  // ~150ms at 50ms poll before declaring removal
 
     // Recent spools history (RAM only, most recent first)

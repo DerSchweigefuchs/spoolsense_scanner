@@ -306,7 +306,9 @@ bool HardwareNFCConnection::detectTag(uint8_t* uid, uint8_t* uidLength) {
         uint8_t uidLen = iso14443a_->activateTypeA(response, 1);
         if (uidLen >= 4) {
             // Reject spurious activations: ATQA/SAK all 0xFF or UID all 0x00 or 0xFF (transceiver noise)
-            if ((response[0] == 0xFF && response[1] == 0xFF) ||
+            // SAK 0xFF is likewise never valid — on a shared SPI bus a read that
+            // returns all-ones there produced plausible-looking but wrong UIDs.
+            if ((response[0] == 0xFF && response[1] == 0xFF) || response[2] == 0xFF ||
                 (response[3] == 0x00 && response[4] == 0x00 && response[5] == 0x00 && response[6] == 0x00) ||
                 (response[3] == 0xFF && response[4] == 0xFF && response[5] == 0xFF && response[6] == 0xFF)) {
                 iso14443a_->mifareHalt();
@@ -353,6 +355,11 @@ bool HardwareNFCConnection::detectTag(uint8_t* uid, uint8_t* uidLength) {
                       (int)err, nfc_->strerror(err), errCount);
     }
     return false;
+}
+
+void HardwareNFCConnection::rfOff() {
+    endTagSession();
+    if (nfc_) nfc_->setRF_off();
 }
 
 void HardwareNFCConnection::endTagSession() {

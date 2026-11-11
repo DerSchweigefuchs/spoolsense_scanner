@@ -170,8 +170,14 @@ private:
     bool _lcdEnabled = false;
     bool _ledEnabled = false;
     bool _keypadEnabled = false;
+#if defined(BOARD_ESP32_C3)
+    // C3 SuperMini scanner build: shared-bus ST7735 128x160 out of the box.
+    bool _tftEnabled = true;
+    char _tftDriver[8] = "st7735";
+#else
     bool _tftEnabled = false;
     char _tftDriver[8] = "st7789";
+#endif
     uint16_t _lowSpoolThreshold = 100;  // grams
     bool _bambuDashboard = false;
     bool _wifiKeepAwake = false;

@@ -946,6 +946,11 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
                 spool.remainingWeight = kgRemaining * 1000.0f;
                 spool.totalWeight = msg.payload.spoolmanSynced.initial_weight_g;
                 spool.tagType = 5;  // "Spoolman" pseudo-type for display badge
+                spool.spoolmanId = msg.payload.spoolmanSynced.spoolman_id > 0
+                                       ? msg.payload.spoolmanSynced.spoolman_id : 0;
+                spool.extruderTemp = msg.payload.spoolmanSynced.extruder_temp;
+                spool.bedTemp = msg.payload.spoolmanSynced.bed_temp;
+                spool.diameterMm = msg.payload.spoolmanSynced.diameter_mm;
                 display_->showSpool(spool);
             } else {
                 // Smart tag: tag already has data (shown by handleSpoolDetected) — just cache enrichment for web UI

@@ -16,6 +16,8 @@
   #include "LogBuffer.h"
   #include "MemoryDiagnostics.h"
   #include "TaskUtils.h"
+  #include "BoardPins.h"
+  #include "ConfigurationManager.h"
   #include <Arduino.h>
   #include <esp_arduino_version.h>
 #else
@@ -790,6 +792,21 @@ void NFCManager::scanLoop() {
     connection_->setupRF();
     connection_->logDiagnostics();
 
+#if PIN_SCAN_BUTTON >= 0 && !defined(NATIVE_TEST)
+    // Hold-to-scan: the RF field is only on while the button is held. Skipped
+    // when the button GPIO is an I2C line of an enabled LCD (C3: GPIO 9 = SCL).
+    {
+        const auto& cfg = ConfigurationManager::getInstance();
+        const bool pinIsLcd = cfg.isLcdEnabled() && !cfg.isTftEnabled() &&
+                              (PIN_SCAN_BUTTON == PIN_LCD_SCL || PIN_SCAN_BUTTON == PIN_LCD_SDA);
+        scanGateEnabled_ = !pinIsLcd;
+        if (scanGateEnabled_) {
+            pinMode(PIN_SCAN_BUTTON, INPUT_PULLUP);
+            Serial.printf("NFCManager: hold-to-scan on GPIO %d\n", PIN_SCAN_BUTTON);
+        }
+    }
+#endif
+
     while (true) {
 #ifndef NATIVE_TEST
         esp_task_wdt_reset();
@@ -810,6 +827,19 @@ void NFCManager::scanLoop() {
             }
             scanPaused_ = false;
         }
+#if PIN_SCAN_BUTTON >= 0 && !defined(NATIVE_TEST)
+        // Button released: field off, tag state frozen (the display keeps the
+        // last spool; queued writes wait for the next press).
+        if (scanGateEnabled_ && digitalRead(PIN_SCAN_BUTTON) == HIGH) {
+            if (!gateRfOff_) {
+                connection_->rfOff();
+                gateRfOff_ = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        gateRfOff_ = false;
+#endif
         SCAN_PHASE(1);
         uint8_t uid[8];
         uint8_t uidLength = 0;

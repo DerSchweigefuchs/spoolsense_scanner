@@ -11,6 +11,12 @@ struct DisplaySpoolData {
     float remainingWeight;   // grams
     float totalWeight;       // grams
     uint8_t tagType;         // 0=unknown, 1=OpenPrintTag, 2=TigerTag, 3=OpenTag3D, 4=Bambu, 5=NFC+, 6=OpenSpool
+    // Optional detail fields (0 = unknown). Filled from Spoolman for UID-linked
+    // tags; only the compact 128x160 TFT layout shows them today.
+    int32_t spoolmanId;      // Spoolman spool ID
+    int16_t extruderTemp;    // °C
+    int16_t bedTemp;         // °C
+    float diameterMm;        // filament diameter
 };
 
 // Display interface — implemented by LCDManager and TFTManager.

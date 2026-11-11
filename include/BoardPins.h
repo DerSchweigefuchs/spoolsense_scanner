@@ -205,8 +205,10 @@
 
 #elif defined(BOARD_ESP32_C3)
   // --- ESP32-C3 SuperMini pin mapping (HORNAXYS, Waveshare, etc.) ---
-  // Scoped variant: NFC SPI reader + I2C LCD + WS2812 only. No TFT, no keypad.
-  // Only one usable SPI controller, so TFT sharing is explicitly disabled here.
+  // NFC SPI reader + either a shared-bus SPI TFT (ST7735 128x160 tested) or an
+  // I2C LCD, plus WS2812 and an optional scan button. No keypad.
+  // Only one usable SPI controller: the TFT shares it with the NFC reader
+  // (BOARD_SHARED_SPI, see SharedSPIBus.h).
   // Exposed GPIO: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 21.
   // Strap pins on C3: GPIO 2, 8, 9 — these sample their state at POR to select
   // boot mode. GPIO 2 must be HIGH, GPIO 9 HIGH for SPI-flash boot (LOW =
@@ -220,13 +222,12 @@
   #define PIN_PN5180_NSS   7
   #define PIN_PN5180_BUSY  3
   #define PIN_PN5180_RST   0   // Non-strap GPIO — avoids GPIO 2 strap-pin risk if module drives RST low at POR
-  #define PIN_PN5180_IRQ   10
-  // GPIO 20/21 are the C3's UART0 default pins. With ARDUINO_USB_CDC_ON_BOOT=1
-  // (set in platformio.ini), Serial routes to USB-CDC and UART0 is free for
-  // reuse as plain GPIO. Do not re-init UART0 or change the USB-CDC flag
-  // without reassigning these pins first.
-  #define PIN_PN5180_GPIO  21
-  #define PIN_PN5180_AUX   20
+  // IRQ/GPIO/AUX are only configured as inputs by the driver (it polls BUSY and
+  // the IRQ_STATUS register over SPI), so they stay unconnected on the C3 and
+  // their GPIOs (10/20/21) drive the TFT control lines instead.
+  #define PIN_PN5180_IRQ   -1
+  #define PIN_PN5180_GPIO  -1
+  #define PIN_PN5180_AUX   -1
   // PN532 SPI (shares physical pins with PN5180; only one active at runtime)
   #define PIN_PN532_SCK    PIN_PN5180_SCK
   #define PIN_PN532_MOSI   PIN_PN5180_MOSI
@@ -250,14 +251,28 @@
   #define PIN_KEYPAD_COL1  -1
   #define PIN_KEYPAD_COL2  -1
   #define PIN_KEYPAD_COL3  -1
-  // TFT — not supported on C3 (single usable SPI bus is dedicated to NFC reader)
-  #define PIN_TFT_MOSI     -1
-  #define PIN_TFT_SCLK     -1
+  // TFT — shares SCK/MOSI with the NFC reader (MISO stays NFC-only; the TFT is
+  // write-only). GPIO 20/21 are the C3's UART0 default pins: with
+  // ARDUINO_USB_CDC_ON_BOOT=1 (platformio.ini) Serial routes to USB-CDC and
+  // UART0 is free for plain GPIO. Do not re-init UART0 or change the USB-CDC
+  // flag without reassigning these pins first.
+  // GPIO 1 is also the default status-LED pin; main.cpp skips the LED when the
+  // TFT is enabled and both resolve to the same GPIO.
+  #define PIN_TFT_MOSI     PIN_PN5180_MOSI
+  #define PIN_TFT_SCLK     PIN_PN5180_SCK
   #define PIN_TFT_MISO     -1
-  #define PIN_TFT_CS       -1
-  #define PIN_TFT_DC       -1
-  #define PIN_TFT_RST      -1
-  #define PIN_TFT_BL       -1
+  #define PIN_TFT_CS       10
+  #define PIN_TFT_DC       20
+  #define PIN_TFT_RST      21
+  #define PIN_TFT_BL       1   // PWM-dimmed backlight
+  // Scan button to GND. GPIO 9 is the SuperMini's BOOT button, so the onboard
+  // button works as-is and an external button can be wired in parallel. It is
+  // only sampled after boot (internal pull-up), so the strap stays HIGH at POR
+  // unless the button is held — which intentionally enters download mode.
+  // Override with -DPIN_SCAN_BUTTON=-1 for continuous (ungated) scanning.
+  #ifndef PIN_SCAN_BUTTON
+  #define PIN_SCAN_BUTTON  9
+  #endif
 
 #elif defined(BOARD_ESP32_S3)
   // --- Generic ESP32-S3 fallback (same as S3-Zero) ---
@@ -334,4 +349,10 @@
   #define PIN_TFT_DC        4
   #define PIN_TFT_RST      -1
   #define PIN_TFT_BL       -1
+#endif
+
+// Optional hold-to-scan button (active LOW). When >= 0 the NFC field is only
+// powered while the button is held; -1 = continuous polling (default).
+#ifndef PIN_SCAN_BUTTON
+  #define PIN_SCAN_BUTTON  -1
 #endif
