@@ -94,6 +94,10 @@ public:
     // boundary (no SPI transaction in flight), so the wizard can take exclusive
     // ownership of the reader. Usage: requestScanPause(); waitForScanPaused();
     // ... drive getDiagConnection() ...; resumeScan();
+    // True while the scan loop sees a tag in the field (display scan indicator).
+    // Plain read of a bool owned by the scan task — a stale value only shifts
+    // the indicator colour by one frame.
+    bool isTagInField() const { return lastSeenValid; }
     void requestScanPause() { diagPauseRequested_ = true; }
     void resumeScan()       { diagPauseRequested_ = false; }
     bool isScanPaused() const { return scanPaused_; }

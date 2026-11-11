@@ -6,6 +6,7 @@
 #include "HomeAssistantManager.h"
 #include "PrinterManager.h"
 #include "SpoolImage.h"
+#include "NFCManager.h"
 #include <WiFi.h>
 #include <Arduino.h>
 
@@ -36,6 +37,7 @@ TFTManager::TFTManager(TFTDriver driver)
     : _tft(driver),
       _sprite(&_tft),
       _strip(&_tft),
+      _scanFx(&_tft),
       _messageQueue(nullptr),
       _taskHandle(nullptr),
       _screenTimeoutMs(DEFAULT_SCREEN_TIMEOUT_MS),
@@ -416,7 +418,8 @@ void TFTManager::processQueue() {
 #if PIN_SCAN_BUTTON >= 0
     // Holding the scan button counts as activity: it wakes a timed-out screen
     // and keeps it on while held (no tag/message needed).
-    if (digitalRead(PIN_SCAN_BUTTON) == LOW) {
+    const bool scanHeld = (digitalRead(PIN_SCAN_BUTTON) == LOW);
+    if (scanHeld) {
         taskENTER_CRITICAL(&_stateMux);
         bool off = _screenOff;
         _lastActivityMs = millis();
@@ -429,6 +432,19 @@ void TFTManager::processQueue() {
                 _screenOff = false;
                 taskEXIT_CRITICAL(&_stateMux);
             }
+        }
+    }
+
+    // Scan indicator: animate while the field is on, wipe once on release.
+    if ((kTftCompactOnly || _compact) && _began) {
+        const unsigned long now = millis();
+        if (scanHeld && now - _lastScanFxMs >= SCAN_FX_FRAME_MS) {
+            _lastScanFxMs = now;
+            SharedSPIBus::Guard g(pdMS_TO_TICKS(20));  // skip a frame rather than stall NFC
+            if (g) drawScanIndicator(now);
+        } else if (!scanHeld && _scanFxShown) {
+            SharedSPIBus::Guard g;
+            if (g) clearScanIndicator();
         }
     }
 #endif
@@ -1080,6 +1096,66 @@ void TFTManager::drawWrappedCompact(LGFX_Sprite& canvas, const char* text, int c
     canvas.drawString(line2, cx, y + 5);
 }
 
+// Bottom band of the compact layout (y 148..159) is left free by every
+// compact screen; the indicator lives there.
+static constexpr int kScanFxY = 148;
+static constexpr int kScanFxH = 12;
+
+static uint32_t blendRgb(uint32_t a, uint32_t b, int t /*0..256*/) {
+    const int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+    const int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+    return ((ar + (br - ar) * t / 256) << 16) | ((ag + (bg - ag) * t / 256) << 8) |
+           (ab + (bb - ab) * t / 256);
+}
+
+void TFTManager::drawScanIndicator(uint32_t nowMs) {
+    if (!_scanFx.getBuffer()) {
+        _scanFx.setColorDepth(16);
+        if (!_scanFx.createSprite(kCompactW, kScanFxH)) return;
+    }
+    LGFX_Sprite& c = _scanFx;
+    c.fillScreen(COLOR_BG);
+    // Cyan while searching, green once a tag sits in the field
+    const uint32_t accent = NFCManager::getInstance().isTagInField() ? COLOR_BAR_FG : COLOR_ACCENT;
+
+    // Contactless symbol: dot + three arcs; a ripple runs outward every 600 ms
+    const int ox = 3, oy = kScanFxH / 2;
+    const int ripple = (nowMs / 150) % 4;  // 0..3: which arc is "hot"
+    c.fillCircle(ox, oy, 1, accent);
+    for (int i = 0; i < 3; i++) {
+        const int r = 3 + i * 3;
+        const uint32_t col = (ripple == i + 1) ? 0xFFFFFF
+                           : (ripple > i)      ? accent
+                                               : COLOR_SPOOL_RIM;
+        c.fillArc(ox, oy, r, r + 1, -50, 50, col);
+    }
+
+    // Sweeping beam with a fading tail ("radar" pass across the band)
+    const int x0 = 18, x1 = kCompactW - 3, span = x1 - x0;
+    const int period = 1100;                         // ms for one left-right-left
+    int ph = nowMs % period;
+    int pos = (ph < period / 2) ? ph * span * 2 / period : (period - ph) * span * 2 / period;
+    const bool forward = ph < period / 2;
+    c.drawFastHLine(x0, oy, span + 1, COLOR_SPOOL_HUB);  // track
+    const int TAIL = 22;
+    for (int k = TAIL; k >= 0; k--) {
+        int x = x0 + pos + (forward ? -k : k);
+        if (x < x0 || x > x1) continue;
+        uint32_t col = blendRgb(COLOR_BG, accent, 256 - k * 256 / (TAIL + 1));
+        c.drawFastVLine(x, oy - 1, 3, col);
+    }
+    c.fillRect(x0 + pos - 1, oy - 2, 3, 5, 0xFFFFFF);  // bright head
+
+    c.pushSprite(0, kScanFxY);
+    _scanFxShown = true;
+}
+
+void TFTManager::clearScanIndicator() {
+    _tft.fillRect(0, kScanFxY, kCompactW, kScanFxH, COLOR_BG);
+    _scanFx.deleteSprite();  // 3 KB back to the heap while idle
+    _scanFxShown = false;
+}
+
 void TFTManager::drawBootCompact(LGFX_Sprite& canvas, int yOffset, const char* version) {
     auto Y = [&](int y){ return y - yOffset; };
     canvas.setTextDatum(MC_DATUM);
@@ -1447,6 +1523,8 @@ void TFTManager::freeForOTA() {
     // Reclaim the transient strip in case the task had to be deleted without
     // parking (safe no-op when it holds no buffer).
     _strip.deleteSprite();
+    _scanFx.deleteSprite();
+    _scanFxShown = false;
 
     // Release the persistent framebuffer for the OTA TLS/HTTPS buffers (#59).
     // Strip-rendering boards hold no framebuffer between frames.
