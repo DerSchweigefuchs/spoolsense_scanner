@@ -602,6 +602,19 @@ bool NFCManager::prepareRF() {
     return true;
 }
 
+void NFCManager::restoreLastSeenIfCurrent(const uint8_t* uid, uint8_t uidLength) {
+    if (uidLength == 0 || uidLength > sizeof(lastSeenUid)) return;
+    if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    if (currentSpool.present && uidLength == currentSpool.uid_length &&
+        memcmp(uid, currentSpool.uid, uidLength) == 0) {
+        memcpy(lastSeenUid, uid, uidLength);
+        lastSeenUidLength = uidLength;
+        lastSeenValid = true;
+        lastSeenMs = millis();
+    }
+    xSemaphoreGive(tagMutex);
+}
+
 // Skip re-reading a tag we already processed, or one being actively written to
 bool NFCManager::isSkippableDuplicate(const uint8_t* uid, uint8_t uidLength) {
     if (isDuplicateSpool(uid, uidLength)) return true;  // same tag as last scan cycle
@@ -891,6 +904,13 @@ void NFCManager::scanLoop() {
             if (!isSkippableDuplicate(uid, uidLength)) {
                 SCAN_PHASE(5);
                 handleNewTag(uid, uidLength);
+            } else if (!lastSeenValid) {
+                // A setupRF() failure cleared lastSeenValid while the tag stayed
+                // on the reader. The duplicate check skips handleNewTag(), the
+                // only place that sets it again, so without this every later
+                // cycle hard-resets the PN5180 (de-powering the tag) and logs
+                // "Tag detected!" until the tag is removed.
+                restoreLastSeenIfCurrent(uid, uidLength);
             }
             SCAN_PHASE(6);
             processWriteQueue();
