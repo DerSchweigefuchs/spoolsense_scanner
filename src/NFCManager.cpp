@@ -838,6 +838,13 @@ void NFCManager::scanLoop() {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
+        if (gateRfOff_) {
+            // New press: forget the frozen tag so only what is on the reader
+            // now gets reported. Otherwise the web UI ("Read Tag UID", /reader)
+            // instantly picks up the previous tag's UID from /api/status.
+            handleTagAbsent();
+            absentMisses_ = 0;
+        }
         gateRfOff_ = false;
 #endif
         SCAN_PHASE(1);
