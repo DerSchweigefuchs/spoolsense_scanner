@@ -400,7 +400,7 @@ void TFTManager::processQueue() {
     if (_currentState == TFTState::Ready &&
         (millis() - _lastStatusRefreshMs >= STATUS_REFRESH_MS)) {
         _lastStatusRefreshMs = millis();
-        if (_wide) {
+        if (!kTftCompactOnly && _wide) {
             refreshStatusBar();
         } else {
             taskENTER_CRITICAL(&_stateMux);
@@ -442,7 +442,7 @@ void TFTManager::processQueue() {
 // prior full-screen landscape frame doesn't linger behind legacy views.
 // (Runs inside processQueue's shared-SPI guard; no-op on 240x240 panels.)
 void TFTManager::clearWideGutters() {
-    if (!_wide) return;
+    if (kTftCompactOnly || !_wide) return;
     const int W = _tft.width(), H = _tft.height();
     if (_blitOx > 0) {
         _tft.fillRect(0, 0, _blitOx, H, COLOR_BG);
@@ -490,7 +490,7 @@ bool TFTManager::render240Frame(DrawFn&& drawBody) {
 }
 
 bool TFTManager::renderBoot(const char* version) {
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawBootCompact(c, y, version); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawBoot240(c, y, version); });
 }
@@ -510,7 +510,7 @@ void TFTManager::drawBoot240(LGFX_Sprite& canvas, int yOffset, const char* versi
 }
 
 bool TFTManager::renderReady() {
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawReadyCompact(c, y); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawReady240(c, y); });
 }
@@ -538,7 +538,7 @@ void TFTManager::drawReady240(LGFX_Sprite& canvas, int yOffset) {
 }
 
 bool TFTManager::renderSpoolScanned(const DisplaySpoolData& spool) {
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawSpoolCompact(c, y, spool); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawSpool240(c, y, spool); });
 }
@@ -857,7 +857,7 @@ void TFTManager::refreshStatusBar() {
 }
 
 bool TFTManager::renderStatus(const char* line1, const char* line2) {
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawStatusCompact(c, y, line1, line2); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawStatus240(c, y, line1, line2); });
 }
@@ -888,7 +888,7 @@ void TFTManager::drawStatus240(LGFX_Sprite& canvas, int yOffset,
 }
 
 bool TFTManager::renderWriteResult(bool success, const char* tagFormat) {
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawWriteResultCompact(c, y, success, tagFormat); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawWriteResult240(c, y, success, tagFormat); });
 }
@@ -921,7 +921,7 @@ void TFTManager::drawWriteResult240(LGFX_Sprite& canvas, int yOffset,
 }
 
 bool TFTManager::renderKeypadEntry(const char* toolNumber) {
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawKeypadCompact(c, y, toolNumber); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawKeypad240(c, y, toolNumber); });
 }
@@ -953,7 +953,7 @@ void TFTManager::drawKeypad240(LGFX_Sprite& canvas, int yOffset, const char* too
 
 bool TFTManager::renderTrayDashboard(const TrayDashboardState& state) {
     // The AMS dashboard is laid out for 240x240; too dense for 128x160.
-    if (_compact)
+    if (kTftCompactOnly || _compact)
         return renderStatus("Bambu AMS", "Dashboard needs a 240x240 TFT");
     return render240Frame([&](LGFX_Sprite& c, int y) { _dashboard.draw(c, y, state); });
 }

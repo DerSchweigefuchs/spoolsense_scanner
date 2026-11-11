@@ -289,6 +289,9 @@ void setup() {
     } else if (strcmp(config.getTftDriver(), "st7735") == 0) {
         tftDriver = TFTDriver::ST7735;
     }
+#if defined(TFT_COMPACT_ONLY)
+    tftDriver = TFTDriver::ST7735;  // the only panel this build contains
+#endif
     tftManagerPtr = new TFTManager(tftDriver);
     tftManagerPtr->begin();
     // Boot screen and "initialized" only after the render task is live (#264)

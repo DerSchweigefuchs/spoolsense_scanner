@@ -25,14 +25,23 @@ enum class TFTDriver : uint8_t {
     ST7735 = 5     // 128x160 portrait — own compact layout (TFTManager *Compact)
 };
 
+// TFT_COMPACT_ONLY (C3 build flag): only the ST7735 compact layout is built,
+// so the linker drops the 240x240 / 480x320 renderers, the AMS dashboard and
+// the other panel drivers — the C3 image sits at its flash budget.
+#if defined(TFT_COMPACT_ONLY)
+static constexpr bool kTftCompactOnly = true;
+#else
+static constexpr bool kTftCompactOnly = false;
+#endif
+
 // 480x320 panels share the centered-sprite / wide-landscape geometry.
 inline bool tftIs480Wide(TFTDriver d) {
-    return d == TFTDriver::ILI9488 || d == TFTDriver::ST7796;
+    return !kTftCompactOnly && (d == TFTDriver::ILI9488 || d == TFTDriver::ST7796);
 }
 
 // Panels smaller than 240x240 render the compact 128x160 layout.
 inline bool tftIsCompact(TFTDriver d) {
-    return d == TFTDriver::ST7735;
+    return kTftCompactOnly || d == TFTDriver::ST7735;
 }
 
 // 1.8" ST7735S 128x160 modules (red PCB, "1.8 TFT SPI 128*160"): the glass
@@ -177,17 +186,22 @@ public:
 #else // WROOM or single-SPI C3/C5/C6
 
 class LGFX : public lgfx::LGFX_Device {
+#if !defined(TFT_COMPACT_ONLY)
     lgfx::Panel_ST7789  _panel_st7789;
     lgfx::Panel_GC9A01  _panel_gc9a01;
     lgfx::Panel_ILI9341 _panel_ili9341;
     lgfx::Panel_ILI9488 _panel_ili9488;
     lgfx::Panel_ST7796  _panel_st7796;
+#endif
     lgfx::Panel_ST7735S _panel_st7735;
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
 
 public:
     LGFX(TFTDriver driver = TFTDriver::ST7789) {
+#if defined(TFT_COMPACT_ONLY)
+        driver = TFTDriver::ST7735;  // only panel built in (see kTftCompactOnly)
+#endif
         // SPI bus — WROOM uses VSPI (PN5180 on HSPI). Capability-enabled
         // single-SPI boards share SPI2 with NFC; disabled targets do not link LGFX.
         {
@@ -218,6 +232,9 @@ public:
         }
 
         lgfx::Panel_Device* panel = nullptr;
+#if defined(TFT_COMPACT_ONLY)
+        panel = &_panel_st7735;
+#else
         if (driver == TFTDriver::GC9A01) {
             panel = &_panel_gc9a01;
         } else if (driver == TFTDriver::ILI9341) {
@@ -231,6 +248,7 @@ public:
         } else {
             panel = &_panel_st7789;
         }
+#endif
 
         panel->setBus(&_bus_instance);
 
