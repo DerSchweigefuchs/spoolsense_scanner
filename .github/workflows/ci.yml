@@ -5,6 +5,8 @@ on:
     branches: [dev, main]
   push:
     branches: [dev]
+  # Manual runs (e.g. a fork that enabled Actions after its PR was opened)
+  workflow_dispatch:
 
 jobs:
   native-tests:
