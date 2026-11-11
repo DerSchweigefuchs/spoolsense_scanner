@@ -413,6 +413,26 @@ void TFTManager::processQueue() {
         }
     }
 
+#if PIN_SCAN_BUTTON >= 0
+    // Holding the scan button counts as activity: it wakes a timed-out screen
+    // and keeps it on while held (no tag/message needed).
+    if (digitalRead(PIN_SCAN_BUTTON) == LOW) {
+        taskENTER_CRITICAL(&_stateMux);
+        bool off = _screenOff;
+        _lastActivityMs = millis();
+        taskEXIT_CRITICAL(&_stateMux);
+        if (off) {
+            SharedSPIBus::Guard busGuard;
+            if (busGuard) {
+                _tft.setBrightness(_isBreathing ? _breathBrightness : 255);
+                taskENTER_CRITICAL(&_stateMux);
+                _screenOff = false;
+                taskEXIT_CRITICAL(&_stateMux);
+            }
+        }
+    }
+#endif
+
     // Screen timeout: turn off after inactivity period if configured (timeoutMs > 0)
     uint32_t timeoutMs;
     unsigned long lastActivity;
