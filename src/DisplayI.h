@@ -33,6 +33,18 @@ public:
     // Spool scanned — LCD shows text, TFT shows graphic with color swatch
     virtual void showSpool(const DisplaySpoolData& spool) = 0;
 
+    // Generic (UID-only) tag just detected, Spoolman lookup running
+    virtual void showTagDetected(const char* uid) {
+        (void)uid;
+        showText4("**** Spool ****", "*** Scanned ***", "Generic Tag", "Checking Spoolman");
+    }
+
+    // Generic tag whose UID is not linked to any Spoolman spool
+    virtual void showTagUnknown(const char* uid) {
+        (void)uid;
+        showText("Generic Tag", "Not in Spoolman");
+    }
+
     // Keypad tool entry — LCD shows text, TFT shows big tool number
     virtual void showKeypad(const char* digits) = 0;
 

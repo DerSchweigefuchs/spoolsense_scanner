@@ -788,7 +788,7 @@ void ApplicationManager::handleGenericTagDetected(const AppMessage& msg) {
         lastDisplayedBlankId[sizeof(lastDisplayedBlankId) - 1] = '\0';
         lastDisplayedSpoolId[0] = '\0';  // Clear smart tag display — allow re-display if tag swapped
 
-        display_->showText4("**** Spool ****", "*** Scanned ***", "Generic Tag", "Checking Spoolman");
+        display_->showTagDetected(msg.payload.genericTag.spool_id);
 
 #ifndef NATIVE_TEST
         if (ConfigurationManager::getInstance().isBambuDashboardEnabled() && trayDashboardState_.has_data) {
@@ -976,7 +976,7 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             bool isGeneric = true;
 #endif
             if (isGeneric) {
-                display_->showText("Generic Tag", "Not in Spoolman");
+                display_->showTagUnknown(msg.payload.spoolmanSynced.spool_id);
             }
             // Smart tag lookup failed: tag has its own data, already displayed — no change needed
         } else {

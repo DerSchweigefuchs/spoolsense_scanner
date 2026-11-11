@@ -33,6 +33,8 @@ public:
     void showSpool(const DisplaySpoolData&) override {}
     void showKeypad(const char*) override {}
     void showTrayDashboard(const TrayDashboardState&) override {}
+    void showTagDetected(const char*) override {}
+    void showTagUnknown(const char*) override {}
 };
 
 #else
@@ -67,7 +69,9 @@ enum class TFTState {
     WriteResult,
     KeypadEntry,
     Error,
-    TrayDashboard
+    TrayDashboard,
+    TagDetected,   // generic tag seen, Spoolman lookup running (statusText = UID)
+    TagUnknown     // generic tag not linked in Spoolman (statusText = UID)
 };
 
 // ---------------------------------------------------------------------------
@@ -117,6 +121,8 @@ public:
     void showSpool(const DisplaySpoolData& spool) override;
     void showKeypad(const char* digits) override;
     void showTrayDashboard(const TrayDashboardState& state) override;
+    void showTagDetected(const char* uid) override;
+    void showTagUnknown(const char* uid) override;
 
 private:
     static void taskFunc(void* param);
@@ -164,6 +170,8 @@ private:
     void drawStatusCompact(LGFX_Sprite& canvas, int yOffset, const char* line1, const char* line2);
     void drawWriteResultCompact(LGFX_Sprite& canvas, int yOffset, bool success, const char* tagFormat);
     void drawKeypadCompact(LGFX_Sprite& canvas, int yOffset, const char* toolNumber);
+    void drawTagCompact(LGFX_Sprite& canvas, int yOffset, const char* uid, bool unknown);
+    bool renderTag(const char* uid, bool unknown);
     // Centered text that wraps once at a space when wider than maxW.
     void drawWrappedCompact(LGFX_Sprite& canvas, const char* text, int cx, int y, int maxW);
     // --- Drawing helpers (y arrives already band-translated by the caller) ---

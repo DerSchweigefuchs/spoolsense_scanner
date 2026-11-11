@@ -368,6 +368,10 @@ void TFTManager::processQueue() {
                 case TFTState::TrayDashboard:
                     rendered = renderTrayDashboard(msg.dashboardState);
                     break;
+                case TFTState::TagDetected:
+                case TFTState::TagUnknown:
+                    rendered = renderTag(msg.statusText, msg.state == TFTState::TagUnknown);
+                    break;
             }
             // Commit state only after a successful (guarded) render, so the idle
             // status-bar refresh never paints a header over a screen that failed
@@ -1082,6 +1086,75 @@ void TFTManager::drawWrappedCompact(LGFX_Sprite& canvas, const char* text, int c
     canvas.drawString(line2, cx, y + 5);
 }
 
+bool TFTManager::renderTag(const char* uid, bool unknown) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawTagCompact(c, y, uid, unknown); });
+    // Larger panels keep the upstream text screens (plus the UID)
+    if (tftIs480Wide(_driver))
+        return renderTextLandscape(unknown ? "Not in Spoolman" : "Tag detected", uid,
+                                   unknown ? 0xFFA726 : COLOR_BAR_FG);
+    return renderStatus(unknown ? "Not in Spoolman" : "Tag detected", uid);
+}
+
+// Tag feedback for generic (UID) tags: a green badge the moment a tag is
+// seen, then an amber one with the UID if Spoolman does not know it.
+void TFTManager::drawTagCompact(LGFX_Sprite& canvas, int yOffset, const char* uid, bool unknown) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, TAG_TYPE_NFC_PLAIN);
+    const uint32_t col = unknown ? 0xFFA726 : COLOR_BAR_FG;
+    const int cx = kCompactW / 2, cy = 46;
+
+    // Badge: ring + contactless waves (detected) or "?" (unknown)
+    canvas.fillCircle(cx, Y(cy), 24, col);
+    canvas.fillCircle(cx, Y(cy), 20, COLOR_BG);
+    if (unknown) {
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextColor(col);
+        canvas.setTextSize(3);
+        canvas.drawString("?", cx + 1, Y(cy + 1));
+    } else {
+        canvas.fillCircle(cx - 8, Y(cy), 2, col);
+        for (int i = 0; i < 3; i++) {
+            const int r = 5 + i * 5;
+            canvas.fillArc(cx - 8, Y(cy), r, r + 1, -45, 45, col);
+        }
+    }
+
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(1);
+    canvas.setTextColor(col);
+    canvas.drawString(unknown ? "Not in Spoolman" : "Tag detected", cx, Y(84));
+
+    // UID in two 7-byte-friendly halves so long 7-byte UIDs stay legible
+    canvas.setTextColor(COLOR_TEXT);
+    const size_t n = uid ? strlen(uid) : 0;
+    if (n > 0 && n <= 10) {
+        canvas.setTextSize(2);
+        canvas.drawString(uid, cx, Y(102));
+    } else if (n > 0) {
+        char a[12] = {0}, b[12] = {0};
+        const size_t half = (n + 1) / 2;
+        strncpy(a, uid, half < 11 ? half : 11);
+        strncpy(b, uid + half, 11);
+        canvas.setTextSize(2);
+        if (canvas.textWidth(a) > kCompactW - 4) canvas.setTextSize(1);
+        canvas.drawString(a, cx, Y(100));
+        canvas.drawString(b, cx, Y(118));
+    }
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_SUBTEXT);
+    if (unknown) {
+        // Where to link it: the reader page of this scanner
+        char ip[24];
+        snprintf(ip, sizeof(ip), "%s/reader", WiFi.localIP().toString().c_str());
+        canvas.drawString("Link at", cx, Y(136));
+        canvas.drawString(ip, cx, Y(148));
+    } else {
+        canvas.drawString("Checking Spoolman...", cx, Y(140));
+    }
+}
+
 void TFTManager::drawBootCompact(LGFX_Sprite& canvas, int yOffset, const char* version) {
     auto Y = [&](int y){ return y - yOffset; };
     canvas.setTextDatum(MC_DATUM);
@@ -1351,6 +1424,24 @@ uint32_t TFTManager::dimColor(uint32_t color, uint8_t brightness) {
 }
 
 // DisplayI interface — renders text using the TFT status screen
+void TFTManager::showTagDetected(const char* uid) {
+    TFTMessage msg{};
+    msg.state = TFTState::TagDetected;
+    snprintf(msg.statusText, sizeof(msg.statusText), "%s", uid ? uid : "");
+    if (_messageQueue && xQueueSend(_messageQueue, &msg, 0) != pdTRUE) {
+        Serial.println("TFTManager: Queue full, dropped display update");
+    }
+}
+
+void TFTManager::showTagUnknown(const char* uid) {
+    TFTMessage msg{};
+    msg.state = TFTState::TagUnknown;
+    snprintf(msg.statusText, sizeof(msg.statusText), "%s", uid ? uid : "");
+    if (_messageQueue && xQueueSend(_messageQueue, &msg, 0) != pdTRUE) {
+        Serial.println("TFTManager: Queue full, dropped display update");
+    }
+}
+
 void TFTManager::showText(const char* line1, const char* line2) {
     TFTMessage msg{};
     msg.state = TFTState::WifiConnecting; // generic two-line status renderer
