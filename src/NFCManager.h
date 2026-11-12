@@ -150,6 +150,7 @@ private:
     bool prepareRF();
     bool isSkippableDuplicate(const uint8_t* uid, uint8_t uidLength);
     void restoreLastSeenIfCurrent(const uint8_t* uid, uint8_t uidLength);
+    bool writeLinkedSpoolmanDataAsOpenSpool();  // scan button: blank tag linked in Spoolman
     void recordSelectedUid(const uint8_t* uid, uint8_t uidLength);
     void clearSelectedUid();
     void handleNewTag(uint8_t* uid, uint8_t uidLength);

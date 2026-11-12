@@ -18,6 +18,7 @@
   #include "TaskUtils.h"
   #include "BoardPins.h"
   #include "ConfigurationManager.h"
+  #include <ArduinoJson.h>
   #include <Arduino.h>
   #include <esp_arduino_version.h>
 #else
@@ -619,6 +620,59 @@ void NFCManager::restoreLastSeenIfCurrent(const uint8_t* uid, uint8_t uidLength)
     xSemaphoreGive(tagMutex);
 }
 
+bool NFCManager::writeLinkedSpoolmanDataAsOpenSpool() {
+#ifdef NATIVE_TEST
+    return false;
+#else
+    if (!lastSeenValid || !currentSpool.present ||
+        currentSpool.kind != TagKind::GenericUidTag) {
+        return false;
+    }
+    GenericTagSpoolInfo info;
+    getGenericTagSpoolInfo(info);
+    if (!info.valid || info.spoolman_id <= 0) {
+        Serial.println("NFCManager: scan button — tag not linked in Spoolman, nothing to write");
+        return false;
+    }
+
+    const char* color = info.color_hex[0] == '#' ? info.color_hex + 1 : info.color_hex;
+    char temp[8];
+    JsonDocument tagDoc;
+    tagDoc["protocol"] = "openspool";
+    tagDoc["version"] = "1.0";
+    tagDoc["type"] = info.material_type[0] ? info.material_type : "PLA";
+    tagDoc["color_hex"] = color[0] ? color : "FFFFFF";
+    tagDoc["brand"] = info.manufacturer;
+    if (info.extruder_temp > 0) {
+        snprintf(temp, sizeof(temp), "%d", info.extruder_temp);
+        tagDoc["min_temp"] = temp;
+        tagDoc["max_temp"] = temp;
+    }
+
+    char payload[256];
+    size_t len = serializeJson(tagDoc, payload, sizeof(payload));
+    if (len == 0 || len >= sizeof(payload)) {
+        Serial.println("NFCManager: scan button — OpenSpool payload too large");
+        return false;
+    }
+
+    NFCWriteRequest req;
+    memset(&req, 0, sizeof(req));
+    req.request_id = generateRequestId();
+    req.type = NFCWriteType::WRITE_OPENSPOOL;
+    strncpy(req.expected_spool_id, currentSpool.spool_id, sizeof(req.expected_spool_id) - 1);
+    if (!enqueueRawWrite(req, (const uint8_t*)payload, len)) {
+        Serial.println("NFCManager: scan button — write queue busy");
+        return false;
+    }
+    Serial.printf("NFCManager: scan button — writing Spoolman spool %ld to %s as OpenSpool: %s\n",
+                  (long)info.spoolman_id, currentSpool.spool_id, payload);
+    LogBuffer::getInstance().logPrintf("Write Spoolman #%ld -> %s (OpenSpool)\n",
+                                       (long)info.spoolman_id, currentSpool.spool_id);
+    return true;
+#endif
+}
+
 // Skip re-reading a tag we already processed, or one being actively written to
 bool NFCManager::isSkippableDuplicate(const uint8_t* uid, uint8_t uidLength) {
     if (isDuplicateSpool(uid, uidLength)) return true;  // same tag as last scan cycle
@@ -871,9 +925,14 @@ void NFCManager::scanLoop() {
         if (scanGateEnabled_) {
             const bool down = digitalRead(PIN_SCAN_BUTTON) == LOW;
             if (down && !buttonWasDown_) {
-                Serial.println("NFCManager: scan button — re-reading tag");
-                handleTagAbsent();
-                absentMisses_ = 0;
+                // A blank tag that Spoolman knows by its UID gets the Spoolman
+                // data written to it (OpenSpool, NTAG215/216). Otherwise the
+                // press re-reads the tag on the reader.
+                if (!writeLinkedSpoolmanDataAsOpenSpool()) {
+                    Serial.println("NFCManager: scan button — re-reading tag");
+                    handleTagAbsent();
+                    absentMisses_ = 0;
+                }
             }
             buttonWasDown_ = down;
         }
