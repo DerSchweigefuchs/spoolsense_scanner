@@ -2786,6 +2786,15 @@ bool NFCManager::isDuplicateSpool(const uint8_t* uid, uint8_t uid_length) {
         return true;
     }
 
+    // The same tag put back (or re-found after a debounced removal) right
+    // after "Tag removed": process it again. The cooldown below would skip
+    // it for 3 s while lastSeenValid stays false, which hard-resets the
+    // PN5180 every cycle and logs "Tag detected!" without reading the tag.
+    if (!currentSpool.present && uid_length == lastSeenUidLength &&
+        memcmp(uid, lastSeenUid, uid_length) == 0) {
+        return false;
+    }
+
     // Cooldown: suppress re-reads within 3s where first 3 bytes match.
     // Catches PN5180 partial UID reads (e.g., 04A651FFFFFFFF) that happen
     // when the tag is re-detected after a brief communication glitch.
