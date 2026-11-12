@@ -2466,11 +2466,14 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
         return false;
     }
 
-    // The payload is copied into ndefBuf and the slot freed in one step
-    uint8_t ndefBuf[256];
+    // The payload is copied into the shared NDEF scratch and the slot freed in
+    // one step. A 256 byte stack buffer was too small for a payload with the
+    // extension fields; writes run one at a time on the NFC task, so the
+    // scratch is free here.
+    uint8_t* const ndefBuf = ndefScratch_;
     uint16_t ndefLen = 0;
     bool staged = rawWriteSlot_.consume(request.request_id, [&](const uint8_t* d, size_t n) {
-        ndefLen = buildNdefMimeTlv("application/json", d, (uint16_t)n, ndefBuf, sizeof(ndefBuf));
+        ndefLen = buildNdefMimeTlv("application/json", d, (uint16_t)n, ndefBuf, sizeof(ndefScratch_));
     });
     if (!staged) {
         Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data staged for this request");
