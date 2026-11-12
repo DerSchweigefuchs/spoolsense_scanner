@@ -268,6 +268,13 @@ void checkWiFi() {
 void setup() {
   delay(1000);
   Serial.begin(115200);
+#if defined(BOARD_ESP32_C3) && ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  // Serial is the USB-Serial/JTAG port here. With a cable plugged in but no
+  // program reading the port, every print blocks for its TX timeout once the
+  // small buffer is full, which stalls NFC, display and web server for
+  // seconds per tag. Drop log output instead of waiting for a reader.
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(1000);
   Serial.println("=== Starting setup ===");
 
