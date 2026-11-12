@@ -243,6 +243,9 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
                 curNfcId[0] = '\0';
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
@@ -377,6 +380,9 @@ static int streamFindVendorByName(const char* targetName, char* outName = nullpt
                 curName[0] = '\0';
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
@@ -681,6 +687,9 @@ static int streamFindFilament(int vendorId, const char* targetMaterial,
                 curMaterial[0] = curColor[0] = curName[0] = '\0';
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
@@ -1733,6 +1742,9 @@ bool SpoolmanManager::parseSpoolCacheStream() {
                 memset(&cur, 0, sizeof(cur));
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
