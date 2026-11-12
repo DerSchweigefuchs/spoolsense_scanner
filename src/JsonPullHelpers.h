@@ -16,6 +16,12 @@ using namespace json;
 class HttpClientStream : public stream {
 private:
     arduino_stream m_stream;
+    WiFiClient* m_client;
+    // Wait for data, but give up as soon as the server has closed the
+    // connection and nothing is buffered. arduino_stream alone polls
+    // available() for up to 1 s, and the JSON lexer reads one character past
+    // the closing ']' — so every streamed response used to cost ~1 s extra.
+    bool waitForData();
 
 public:
     explicit HttpClientStream(WiFiClient& client);
