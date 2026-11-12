@@ -473,10 +473,12 @@ bool PN5180::mfcAuthenticate(const uint8_t *key, uint8_t keyType, uint8_t blockN
 
 // Rate-limited timeout log: with a short timeout the miss repeats every scan
 // cycle, so print the first one and then every 100th with a running count.
-static void logRfSwitchTimeout(const char* which, uint32_t& count) {
+static void logRfSwitchTimeout(const char* which, uint32_t& count,
+                               uint32_t rfStatus, uint32_t irqStatus) {
   count++;
   if (count == 1 || count % 100 == 0) {
-    Serial.printf("PN5180: TIMEOUT %s (x%lu)\n", which, (unsigned long)count);
+    Serial.printf("PN5180: TIMEOUT %s (x%lu) RF_STATUS=0x%08lX IRQ_STATUS=0x%08lX\n", which,
+                  (unsigned long)count, (unsigned long)rfStatus, (unsigned long)irqStatus);
   }
 }
 
@@ -507,7 +509,7 @@ bool PN5180::setRF_on() {
       }
       if (millis() - t > PN5180_RF_SWITCH_TIMEOUT_MS) {
         static uint32_t rfOnTimeouts = 0;
-        logRfSwitchTimeout("TX_RFON_IRQ", rfOnTimeouts);
+        logRfSwitchTimeout("TX_RFON_IRQ", rfOnTimeouts, rfStatus, getIRQStatus());
         return false;
       }
     }
@@ -539,7 +541,7 @@ bool PN5180::setRF_off() {
       }
       if (millis() - t > PN5180_RF_SWITCH_TIMEOUT_MS) {
         static uint32_t rfOffTimeouts = 0;
-        logRfSwitchTimeout("TX_RFOFF_IRQ", rfOffTimeouts);
+        logRfSwitchTimeout("TX_RFOFF_IRQ", rfOffTimeouts, rfStatus, getIRQStatus());
         return false;
       }
     }

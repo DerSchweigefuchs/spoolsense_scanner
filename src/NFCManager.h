@@ -206,6 +206,7 @@ private:
     // skips handleNewTag(), which is the whole point of #276.
     char selectedUidHex_[17] = {0};
     uint8_t absentMisses_ = 0;
+    uint16_t idleCyclesSinceReset_ = 0;  // idle cycles since the last PN5180 hard reset
     bool forceRfReset_ = false;   // hard-reset the PN5180 next cycle even with a tag present
     uint8_t rfTraceBudget_ = 0;   // per-cycle trace lines left after an RF failure
     bool scanGateEnabled_ = false;   // hold-to-scan button (PIN_SCAN_BUTTON) active

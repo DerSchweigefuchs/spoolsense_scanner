@@ -65,6 +65,12 @@ private:
     // Tag session: true after activateTypeA succeeds in detectTag, cleared after halt
     // Allows readISO14443Pages to skip redundant setupRF + re-activation
     bool tagSessionActive_ = false;
+    // Scan-cycle economy (see PN5180_ISO15693_SCAN_INTERVAL in the .cpp)
+    bool scanIso15693_ = true;        // this cycle includes the ISO15693 inventory
+    bool iso15693Sticky_ = false;     // an ISO15693 tag is on the reader: scan it every cycle
+    uint8_t iso15693Phase_ = 0;       // cycles since the last ISO15693 scan
+    uint8_t iso15693Misses_ = 0;      // consecutive ISO15693 misses while sticky
+    bool fieldOffAfterReset_ = false; // chip was just reset: RF field is known to be off
 
     // PN5180 firmware version (populated during begin())
     uint8_t fw_[2] = {0, 0};

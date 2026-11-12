@@ -568,6 +568,10 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
 
 // ── Scan loop helpers ───────────────────────────────────────
 
+#ifndef NFC_IDLE_RESET_INTERVAL
+#define NFC_IDLE_RESET_INTERVAL 1
+#endif
+
 bool NFCManager::prepareRF() {
     if (consecutiveFailures_ >= RESTART_THRESHOLD) {
         Serial.println("NFCManager: CRITICAL - too many consecutive failures, restarting ESP");
@@ -582,10 +586,15 @@ bool NFCManager::prepareRF() {
 
     // Full hardware reset only when no tag present — reset cuts RF, de-powering passive tags —
     // or once after an RF failure.
-    const bool resetNow = !lastSeenValid || forceRfReset_;
+    // NFC_IDLE_RESET_INTERVAL = 1 resets on every idle cycle; boards with an
+    // expensive scan cycle reset only every Nth idle cycle.
+    const bool idleResetDue = !lastSeenValid &&
+                              (++idleCyclesSinceReset_ >= NFC_IDLE_RESET_INTERVAL);
+    const bool resetNow = idleResetDue || forceRfReset_;
     if (resetNow) {
         connection_->reset();
         forceRfReset_ = false;
+        idleCyclesSinceReset_ = 0;
     }
     if (!connection_->setupRF()) {
         consecutiveFailures_++;
