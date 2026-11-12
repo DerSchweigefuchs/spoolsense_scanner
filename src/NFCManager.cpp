@@ -1290,6 +1290,10 @@ void NFCManager::sendBambuDetectedMessage() {
     msg.payload.spoolDetected.material_type = materialTypeFromString(bt.filament_type);
     strncpy(msg.payload.spoolDetected.material_name, bt.filament_type,
             sizeof(msg.payload.spoolDetected.material_name) - 1);
+    // Bambu tags carry no brand field; they only exist on Bambu Lab spools.
+    // Without this, Spoolman sync files them under a vendor named "Unknown".
+    strncpy(msg.payload.spoolDetected.manufacturer, "Bambu Lab",
+            sizeof(msg.payload.spoolDetected.manufacturer) - 1);
 
     msg.payload.spoolDetected.primary_color[0] = bt.color_r;
     msg.payload.spoolDetected.primary_color[1] = bt.color_g;
