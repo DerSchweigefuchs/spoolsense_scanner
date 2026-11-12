@@ -22,10 +22,21 @@ bool parseOpenSpool(const uint8_t* json, size_t len, OpenSpoolData& out) {
     strncpy(out.color_hex, doc["color_hex"] | "", sizeof(out.color_hex) - 1);
     strncpy(out.brand, doc["brand"] | "", sizeof(out.brand) - 1);
 
-    const char* minT = doc["min_temp"] | "0";
-    const char* maxT = doc["max_temp"] | "0";
-    out.min_temp = (int16_t)atoi(minT);
-    out.max_temp = (int16_t)atoi(maxT);
+    // Writers disagree on types: the OpenSpool spec uses strings for the
+    // temperatures, other firmwares write numbers. Accept both everywhere.
+    auto num = [&doc](const char* key) -> float {
+        JsonVariantConst v = doc[key];
+        if (v.is<const char*>()) return (float)atof(v.as<const char*>());
+        return v | 0.0f;
+    };
+    out.min_temp = (int16_t)num("min_temp");
+    out.max_temp = (int16_t)num("max_temp");
+    out.bed_min_temp = (int16_t)num("bed_min_temp");
+    out.bed_max_temp = (int16_t)num("bed_max_temp");
+    out.diameter_mm = num("diameter");
+    out.density = num("density");
+    out.weight_g = num("weight");
+    out.spoolman_id = (int32_t)num("spoolman_id");
 
     out.valid = true;
     return true;

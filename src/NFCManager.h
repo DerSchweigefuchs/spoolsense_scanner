@@ -61,6 +61,9 @@ struct GenericTagSpoolInfo {
     int32_t spoolman_id;
     int16_t extruder_temp;
     int16_t bed_temp;
+    float diameter_mm;
+    float density;
+    float initial_weight_g;
     bool valid;
 };
 
@@ -69,6 +72,9 @@ public:
     static NFCManager& getInstance();
     bool begin();                                    // Init hardware + queues
     bool startScanTask();                            // Start FreeRTOS scan task; true only if the task is live
+    // True while a tag is on the reader. Unsynchronised read of a flag only
+    // the scan task writes; good enough for "keep the screen on".
+    bool isTagOnReader() const { return lastSeenValid; }
     bool enqueueWrite(const NFCWriteRequest& req);   // Queue a write request
     bool enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data, size_t dataSize);
     bool enqueueOpenTag3DPatch(const NFCWriteRequest& req, const opentag3d_patch_t& patch);

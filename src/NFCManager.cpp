@@ -465,7 +465,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             if (!isOpenTag3D) {
                 const char* jsonMime = "application/json";
                 if (rec.mimeLen == strlen(jsonMime) && memcmp(rec.mimeType, jsonMime, rec.mimeLen) == 0) {
-                    uint8_t payload[256];
+                    uint8_t payload[RAW_WRITE_BUFFER_SIZE];  // as large as the writer can stage
                     SCAN_PHASE(23);
                     uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
                                                             effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
@@ -633,8 +633,11 @@ bool NFCManager::writeLinkedSpoolmanDataAsOpenSpool() {
 #ifdef NATIVE_TEST
     return false;
 #else
+    // Blank tags, and OpenSpool tags (refresh them from Spoolman, e.g. after
+    // the filament was edited there). Other formats are left alone.
     if (!lastSeenValid || !currentSpool.present ||
-        currentSpool.kind != TagKind::GenericUidTag) {
+        (currentSpool.kind != TagKind::GenericUidTag &&
+         currentSpool.kind != TagKind::OpenSpoolTag)) {
         return false;
     }
     GenericTagSpoolInfo info;
@@ -657,8 +660,18 @@ bool NFCManager::writeLinkedSpoolmanDataAsOpenSpool() {
         tagDoc["min_temp"] = temp;
         tagDoc["max_temp"] = temp;
     }
+    // Extension fields: everything about the filament that does not change
+    // while printing. The fill level stays in Spoolman.
+    if (info.bed_temp > 0) {
+        tagDoc["bed_min_temp"] = info.bed_temp;
+        tagDoc["bed_max_temp"] = info.bed_temp;
+    }
+    if (info.diameter_mm > 0.0f) tagDoc["diameter"] = serialized(String(info.diameter_mm, 2));
+    if (info.density > 0.0f) tagDoc["density"] = serialized(String(info.density, 2));
+    if (info.initial_weight_g > 0.0f) tagDoc["weight"] = (int)(info.initial_weight_g + 0.5f);
+    tagDoc["spoolman_id"] = info.spoolman_id;
 
-    char payload[256];
+    char payload[RAW_WRITE_BUFFER_SIZE];
     size_t len = serializeJson(tagDoc, payload, sizeof(payload));
     if (len == 0 || len >= sizeof(payload)) {
         Serial.println("NFCManager: scan button — OpenSpool payload too large");
@@ -1663,9 +1676,17 @@ void NFCManager::sendOpenSpoolMessage(const char* uid, const OpenSpoolData& os) 
 
     s.min_print_temp = os.min_temp;
     s.max_print_temp = os.max_temp;
+    s.min_bed_temp = os.bed_min_temp;
+    s.max_bed_temp = os.bed_max_temp;
+    s.diameter = os.diameter_mm;
+    s.density = os.density;
+    // The tag's weight is the full spool size, not a fill level: flag it
+    // nominal so it is never synced into Spoolman as remaining weight.
+    s.initial_weight_g = os.weight_g;
+    s.weight_is_nominal = true;
 
     strncpy(s.tag_format, "OpenSpool", sizeof(s.tag_format) - 1);
-    s.spoolman_id = -1;
+    s.spoolman_id = os.spoolman_id > 0 ? os.spoolman_id : -1;
 
     Serial.println("--- OpenSpool SpoolDetected payload ---");
     Serial.printf("  uid:          %s\n", s.spool_id);

@@ -123,6 +123,7 @@ public:
     void showTrayDashboard(const TrayDashboardState& state) override;
     void showTagDetected(const char* uid) override;
     void showTagUnknown(const char* uid) override;
+    void showIdle() override { if (_compact) showReady(); }
 
 private:
     static void taskFunc(void* param);

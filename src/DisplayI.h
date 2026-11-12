@@ -46,6 +46,10 @@ public:
     }
 
     // Keypad tool entry — LCD shows text, TFT shows big tool number
+    // The tag was removed a moment ago and nothing else claimed the screen.
+    // Large displays keep the last spool up; small ones go back to "ready".
+    virtual void showIdle() {}
+
     virtual void showKeypad(const char* digits) = 0;
 
     // Write result — LCD shows text, TFT shows checkmark/X graphic

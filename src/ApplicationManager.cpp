@@ -122,6 +122,8 @@ void ApplicationManager::processMessages() {
 #endif
             if (keypadBufferLen_ == 0 && !isTft) {
                 showStatusScreen();
+            } else if (keypadBufferLen_ == 0 && display_) {
+                display_->showIdle();   // small TFTs return to the ready screen
             }
             pendingStatusAfterTagRemoved = false;
         }
@@ -557,9 +559,17 @@ void ApplicationManager::handleSpoolDetected(const AppMessage& msg) {
 #ifndef NATIVE_TEST
     // Spoolman sync: auto-update remaining weight (SELF_DIRECTED mode only)
     // Suppress flag can gate this per-tag (e.g., after batch write to Spoolman)
+    // An OpenSpool tag that names its Spoolman spool was written FROM Spoolman
+    // (scan button). Spoolman is the source of truth for it: syncing the tag's
+    // copy back could archive and replace the spool once the two differ, e.g.
+    // after the filament's colour was corrected in Spoolman. Look it up only.
+    const bool writtenFromSpoolman =
+        strcmp(msg.payload.spoolDetected.tag_format, "OpenSpool") == 0 &&
+        msg.payload.spoolDetected.spoolman_id > 0;
     if (automationMode == AutomationMode::SELF_DIRECTED &&
         SpoolmanManager::getInstance().isConfigured() &&
-        !msg.payload.spoolDetected.suppress_spoolman_sync) {
+        !msg.payload.spoolDetected.suppress_spoolman_sync &&
+        !writtenFromSpoolman) {
         enqueueSpoolmanSync(msg.payload.spoolDetected);
     }
 #endif
@@ -906,7 +916,8 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
         CurrentSpoolState spoolState;
         bool tagStillPresent = NFCManager::getInstance().getCurrentSpoolState(spoolState)
                                && spoolState.present
-                               && spoolState.kind == TagKind::GenericUidTag
+                               && (spoolState.kind == TagKind::GenericUidTag ||
+                                   spoolState.kind == TagKind::OpenSpoolTag)
                                && strcmp(spoolState.spool_id, msg.payload.spoolmanSynced.spool_id) == 0;
         if (tagStillPresent) {
             // Populate writeback fields for WRITE_TAG operation (enqueued in web UI)
@@ -918,6 +929,9 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             info.spoolman_id = msg.payload.spoolmanSynced.spoolman_id;
             info.extruder_temp = msg.payload.spoolmanSynced.extruder_temp;
             info.bed_temp = msg.payload.spoolmanSynced.bed_temp;
+            info.diameter_mm = msg.payload.spoolmanSynced.diameter_mm;
+            info.density = msg.payload.spoolmanSynced.density;
+            info.initial_weight_g = msg.payload.spoolmanSynced.initial_weight_g;
             info.valid = true;
             NFCManager::getInstance().setGenericTagSpoolInfo(info);
         }

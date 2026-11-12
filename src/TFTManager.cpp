@@ -6,6 +6,7 @@
 #include "HomeAssistantManager.h"
 #include "PrinterManager.h"
 #include "SpoolImage.h"
+#include "NFCManager.h"
 #include <WiFi.h>
 #include <Arduino.h>
 
@@ -438,6 +439,14 @@ void TFTManager::processQueue() {
     }
 
 #endif
+
+    // A tag lying on the reader counts as activity: the spool it shows stays
+    // readable for as long as it is there. The timeout starts at removal.
+    if (NFCManager::getInstance().isTagOnReader()) {
+        taskENTER_CRITICAL(&_stateMux);
+        if (!_screenOff) _lastActivityMs = millis();
+        taskEXIT_CRITICAL(&_stateMux);
+    }
 
     // Screen timeout: turn off after inactivity period if configured (timeoutMs > 0)
     uint32_t timeoutMs;
