@@ -932,10 +932,14 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             CurrentSpoolState state;
             bool gotState = NFCManager::getInstance().getCurrentSpoolState(state);
             bool isGeneric = !gotState || state.kind == TagKind::GenericUidTag;
+            // OpenSpool tags carry no weight: Spoolman's fill level is the only
+            // one there is, so show the Spoolman view for them as well.
+            bool showSpoolmanView = isGeneric || state.kind == TagKind::OpenSpoolTag;
 #else
             bool isGeneric = true;
+            bool showSpoolmanView = true;
 #endif
-            if (isGeneric) {
+            if (showSpoolmanView) {
                 // Generic UID tag: no tag data — fill display with Spoolman data
                 DisplaySpoolData spool{};
                 strncpy(spool.brand, msg.payload.spoolmanSynced.manufacturer, sizeof(spool.brand) - 1);
@@ -952,7 +956,8 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
                 spool.bedTemp = msg.payload.spoolmanSynced.bed_temp;
                 spool.diameterMm = msg.payload.spoolmanSynced.diameter_mm;
                 display_->showSpool(spool);
-            } else {
+            }
+            if (!isGeneric) {
                 // Smart tag: tag already has data (shown by handleSpoolDetected) — just cache enrichment for web UI
                 smartTagEnrichment_.valid = true;
                 smartTagEnrichment_.spoolman_id = msg.payload.spoolmanSynced.spoolman_id;
