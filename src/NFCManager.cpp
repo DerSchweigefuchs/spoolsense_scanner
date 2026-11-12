@@ -579,23 +579,27 @@ bool NFCManager::prepareRF() {
         attemptRecovery();
     }
 
-    // Full hardware reset only when no tag present — reset cuts RF, de-powering passive tags
-    if (!lastSeenValid) {
+    // Full hardware reset only when no tag present — reset cuts RF, de-powering passive tags —
+    // or once after an RF failure.
+    const bool resetNow = !lastSeenValid || forceRfReset_;
+    if (resetNow) {
         connection_->reset();
+        forceRfReset_ = false;
     }
     if (!connection_->setupRF()) {
         consecutiveFailures_++;
         Serial.printf("NFCManager: setupRF() failed (consecutive=%lu, lastSeenValid=%d)\n",
                       consecutiveFailures_, lastSeenValid ? 1 : 0);
-        if (lastSeenValid) {
-            Serial.println("NFCManager: clearing lastSeenValid to force hardware reset");
-            lastSeenValid = false;
-        }
+        // Reset the reader next cycle but keep the tag state: clearing
+        // lastSeenValid here meant a tag lifted meanwhile was never reported
+        // as removed (display, web UI and MQTT kept showing it).
+        forceRfReset_ = true;
+        rfTraceBudget_ = 60;  // trace the next cycles: how long until a tag is seen again
         return false;
     }
 
     // Give tag time to power up after RF field reset
-    if (!lastSeenValid) {
+    if (resetNow) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     consecutiveFailures_ = 0;
@@ -880,13 +884,29 @@ void NFCManager::scanLoop() {
         uint8_t uidLength = 0;
 
         SCAN_PHASE(2);
+        const uint32_t cycleStartMs = millis();
+        const bool rfTrace = rfTraceBudget_ > 0;
         if (!prepareRF()) {
+            if (rfTrace) {
+                rfTraceBudget_--;
+                Serial.printf("NFC trace: prepareRF FAILED after %lums\n",
+                              (unsigned long)(millis() - cycleStartMs));
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
         SCAN_PHASE(3);
-        if (connection_->detectTag(uid, &uidLength)) {
+        const uint32_t detectStartMs = millis();
+        const bool detected = connection_->detectTag(uid, &uidLength);
+        if (rfTrace) {
+            rfTraceBudget_ = detected ? 0 : rfTraceBudget_ - 1;
+            Serial.printf("NFC trace: rf %lums, detect %lums -> %s\n",
+                          (unsigned long)(detectStartMs - cycleStartMs),
+                          (unsigned long)(millis() - detectStartMs),
+                          detected ? "TAG" : "none");
+        }
+        if (detected) {
             absentMisses_ = 0;
             if (!lastSeenValid || memcmp(uid, lastSeenUid, uidLength) != 0) {
                 char uidHex[17]; uidHex[0] = '\0';
