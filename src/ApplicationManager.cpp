@@ -1039,10 +1039,14 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             msg.payload.spoolmanSynced.spool_id, true);
     }
 
-    // Write Spoolman ID back to tag if it's new or changed
+    // Write Spoolman ID back to tag if it's new or changed. Only OpenPrintTag
+    // keeps its data in tag_data: a Bambu tag also reports tag_data_valid, but
+    // it is read-only MIFARE Classic, so the write failed on every scan and
+    // the screen showed "Spool Update Failed!".
     if (msg.payload.spoolmanSynced.success && msg.payload.spoolmanSynced.spoolman_id > 0) {
         CurrentSpoolState state;
-        if (NFCManager::getInstance().getCurrentSpoolState(state) && state.tag_data_valid) {
+        if (NFCManager::getInstance().getCurrentSpoolState(state) && state.tag_data_valid &&
+            state.kind == TagKind::OpenPrintTag) {
             int32_t existingId = -1;
             opt_get_gp_spoolman_id(&state.tag_data, &existingId);
             if (existingId != msg.payload.spoolmanSynced.spoolman_id) {

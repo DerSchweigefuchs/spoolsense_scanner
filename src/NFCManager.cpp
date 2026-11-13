@@ -1083,6 +1083,7 @@ bool NFCManager::readAndParseTag(uint8_t* uid, uint8_t uid_length) {
 
     currentSpool.present = true;
     currentSpool.tag_data_valid = true;
+    currentSpool.kind = TagKind::OpenPrintTag;    // was left at the previous tag's kind
     currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — no NTAG identity here
     currentSpool.cc_user_end = 0;
 
@@ -2653,7 +2654,9 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
         return false;
     }
 
-    if (!currentSpool.tag_data_valid) {
+    // tag_data holds OpenPrintTag CBOR only; never write it to another kind
+    // of tag (a Bambu tag sets tag_data_valid for its own decoded blocks).
+    if (!currentSpool.tag_data_valid || currentSpool.kind != TagKind::OpenPrintTag) {
         xSemaphoreGive(tagMutex);
         return false;
     }
