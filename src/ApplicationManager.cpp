@@ -122,8 +122,6 @@ void ApplicationManager::processMessages() {
 #endif
             if (keypadBufferLen_ == 0 && !isTft) {
                 showStatusScreen();
-            } else if (keypadBufferLen_ == 0 && display_) {
-                display_->showIdle();   // small TFTs return to the ready screen
             }
             pendingStatusAfterTagRemoved = false;
         }
