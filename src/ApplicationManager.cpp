@@ -557,9 +557,17 @@ void ApplicationManager::handleSpoolDetected(const AppMessage& msg) {
 #ifndef NATIVE_TEST
     // Spoolman sync: auto-update remaining weight (SELF_DIRECTED mode only)
     // Suppress flag can gate this per-tag (e.g., after batch write to Spoolman)
+    // An OpenSpool tag that names its Spoolman spool was written FROM Spoolman
+    // (scan button). Spoolman is the source of truth for it: syncing the tag's
+    // copy back could archive and replace the spool once the two differ, e.g.
+    // after the filament's colour was corrected in Spoolman. Look it up only.
+    const bool writtenFromSpoolman =
+        strcmp(msg.payload.spoolDetected.tag_format, "OpenSpool") == 0 &&
+        msg.payload.spoolDetected.spoolman_id > 0;
     if (automationMode == AutomationMode::SELF_DIRECTED &&
         SpoolmanManager::getInstance().isConfigured() &&
-        !msg.payload.spoolDetected.suppress_spoolman_sync) {
+        !msg.payload.spoolDetected.suppress_spoolman_sync &&
+        !writtenFromSpoolman) {
         enqueueSpoolmanSync(msg.payload.spoolDetected);
     }
 #endif
@@ -788,7 +796,7 @@ void ApplicationManager::handleGenericTagDetected(const AppMessage& msg) {
         lastDisplayedBlankId[sizeof(lastDisplayedBlankId) - 1] = '\0';
         lastDisplayedSpoolId[0] = '\0';  // Clear smart tag display — allow re-display if tag swapped
 
-        display_->showText4("**** Spool ****", "*** Scanned ***", "Generic Tag", "Checking Spoolman");
+        display_->showTagDetected(msg.payload.genericTag.spool_id);
 
 #ifndef NATIVE_TEST
         if (ConfigurationManager::getInstance().isBambuDashboardEnabled() && trayDashboardState_.has_data) {
@@ -906,7 +914,8 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
         CurrentSpoolState spoolState;
         bool tagStillPresent = NFCManager::getInstance().getCurrentSpoolState(spoolState)
                                && spoolState.present
-                               && spoolState.kind == TagKind::GenericUidTag
+                               && (spoolState.kind == TagKind::GenericUidTag ||
+                                   spoolState.kind == TagKind::OpenSpoolTag)
                                && strcmp(spoolState.spool_id, msg.payload.spoolmanSynced.spool_id) == 0;
         if (tagStillPresent) {
             // Populate writeback fields for WRITE_TAG operation (enqueued in web UI)
@@ -918,6 +927,9 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             info.spoolman_id = msg.payload.spoolmanSynced.spoolman_id;
             info.extruder_temp = msg.payload.spoolmanSynced.extruder_temp;
             info.bed_temp = msg.payload.spoolmanSynced.bed_temp;
+            info.diameter_mm = msg.payload.spoolmanSynced.diameter_mm;
+            info.density = msg.payload.spoolmanSynced.density;
+            info.initial_weight_g = msg.payload.spoolmanSynced.initial_weight_g;
             info.valid = true;
             NFCManager::getInstance().setGenericTagSpoolInfo(info);
         }
@@ -932,10 +944,14 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             CurrentSpoolState state;
             bool gotState = NFCManager::getInstance().getCurrentSpoolState(state);
             bool isGeneric = !gotState || state.kind == TagKind::GenericUidTag;
+            // OpenSpool tags carry no weight: Spoolman's fill level is the only
+            // one there is, so show the Spoolman view for them as well.
+            bool showSpoolmanView = isGeneric || state.kind == TagKind::OpenSpoolTag;
 #else
             bool isGeneric = true;
+            bool showSpoolmanView = true;
 #endif
-            if (isGeneric) {
+            if (showSpoolmanView) {
                 // Generic UID tag: no tag data — fill display with Spoolman data
                 DisplaySpoolData spool{};
                 strncpy(spool.brand, msg.payload.spoolmanSynced.manufacturer, sizeof(spool.brand) - 1);
@@ -946,8 +962,14 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
                 spool.remainingWeight = kgRemaining * 1000.0f;
                 spool.totalWeight = msg.payload.spoolmanSynced.initial_weight_g;
                 spool.tagType = 5;  // "Spoolman" pseudo-type for display badge
+                spool.spoolmanId = msg.payload.spoolmanSynced.spoolman_id > 0
+                                       ? msg.payload.spoolmanSynced.spoolman_id : 0;
+                spool.extruderTemp = msg.payload.spoolmanSynced.extruder_temp;
+                spool.bedTemp = msg.payload.spoolmanSynced.bed_temp;
+                spool.diameterMm = msg.payload.spoolmanSynced.diameter_mm;
                 display_->showSpool(spool);
-            } else {
+            }
+            if (!isGeneric) {
                 // Smart tag: tag already has data (shown by handleSpoolDetected) — just cache enrichment for web UI
                 smartTagEnrichment_.valid = true;
                 smartTagEnrichment_.spoolman_id = msg.payload.spoolmanSynced.spoolman_id;
@@ -971,7 +993,7 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             bool isGeneric = true;
 #endif
             if (isGeneric) {
-                display_->showText("Generic Tag", "Not in Spoolman");
+                display_->showTagUnknown(msg.payload.spoolmanSynced.spool_id);
             }
             // Smart tag lookup failed: tag has its own data, already displayed — no change needed
         } else {
@@ -1017,10 +1039,14 @@ void ApplicationManager::handleSpoolmanSynced(const AppMessage& msg) {
             msg.payload.spoolmanSynced.spool_id, true);
     }
 
-    // Write Spoolman ID back to tag if it's new or changed
+    // Write Spoolman ID back to tag if it's new or changed. Only OpenPrintTag
+    // keeps its data in tag_data: a Bambu tag also reports tag_data_valid, but
+    // it is read-only MIFARE Classic, so the write failed on every scan and
+    // the screen showed "Spool Update Failed!".
     if (msg.payload.spoolmanSynced.success && msg.payload.spoolmanSynced.spoolman_id > 0) {
         CurrentSpoolState state;
-        if (NFCManager::getInstance().getCurrentSpoolState(state) && state.tag_data_valid) {
+        if (NFCManager::getInstance().getCurrentSpoolState(state) && state.tag_data_valid &&
+            state.kind == TagKind::OpenPrintTag) {
             int32_t existingId = -1;
             opt_get_gp_spoolman_id(&state.tag_data, &existingId);
             if (existingId != msg.payload.spoolmanSynced.spoolman_id) {

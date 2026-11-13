@@ -210,9 +210,19 @@ bool HardwareNFCConnection::begin() {
     return true;
 }
 
+// How often the scan loop looks for ISO15693 tags (OpenPrintTag). 1 = every
+// cycle. Boards whose scan cycle is expensive (C3: single core, shared SPI bus)
+// raise this so most cycles only do the cheaper ISO14443A activation; an
+// ISO15693 tag is then found up to N cycles later, and scanned every cycle
+// once it is on the reader.
+#ifndef PN5180_ISO15693_SCAN_INTERVAL
+#define PN5180_ISO15693_SCAN_INTERVAL 1
+#endif
+
 void HardwareNFCConnection::reset() {
     if (nfc_) {
         nfc_->reset();
+        fieldOffAfterReset_ = true;
     }
 }
 
@@ -226,6 +236,7 @@ bool HardwareNFCConnection::hardwareReset() {
     delay(10);
     digitalWrite(pinRst_, HIGH);
     PN5180::clearBusWedged();  // fresh chip — release the fail-fast latch
+    fieldOffAfterReset_ = true;
 
     // Wait for BUSY to go LOW with timeout
     unsigned long start = millis();
@@ -257,15 +268,36 @@ bool HardwareNFCConnection::hardwareReset() {
 bool HardwareNFCConnection::setupRF() {
     if (!nfc_) return false;
 
+#if PN5180_ISO15693_SCAN_INTERVAL > 1
+    // Most cycles look for ISO14443A tags only; the ISO15693 inventory (and
+    // the second RF configuration it needs) runs every Nth cycle, or every
+    // cycle while an ISO15693 tag is on the reader.
+    scanIso15693_ = iso15693Sticky_ || !iso14443a_ ||
+                    (++iso15693Phase_ >= PN5180_ISO15693_SCAN_INTERVAL);
+    if (scanIso15693_) iso15693Phase_ = 0;
+#endif
+
     // RF reconfiguration sequence: turn off field to clear stale state from previous protocol
-    // (matters when switching between ISO15693 and ISO14443A detection loops)
-    nfc_->setRF_off();
+    // (matters when switching between ISO15693 and ISO14443A detection loops).
+    // Right after a chip reset the field is already off: RF_OFF then raises no
+    // TX_RFOFF edge and the wait would run into its timeout.
+    if (!fieldOffAfterReset_) {
+        nfc_->setRF_off();
+    }
+    fieldOffAfterReset_ = false;
 
     // SYSTEM_CONFIG bits [2:0] control state machine: mask to 000 = Idle/StopCom (safe state)
     nfc_->writeRegisterWithAndMask(SYSTEM_CONFIG, 0xfffffff8);
 
     // Clear all pending IRQs before loading new RF config to avoid false triggers
     nfc_->clearIRQStatus(0xffffffff);
+
+    if (!scanIso15693_) {
+        // ISO14443A-only cycle: one configuration, one field-on. The tag has
+        // been power-cycled by the RF_OFF above, so WUPA finds it again.
+        if (!nfc_->loadRFConfig(0x00, 0x80)) return false;
+        return nfc_->setRF_on();
+    }
 
     // Config 0x0d/0x8d = ISO15693 (15.4kHz tuning); returns false on comms failure only
     if (!nfc_->loadRFConfig(0x0d, 0x8d)) return false;
@@ -284,7 +316,17 @@ bool HardwareNFCConnection::detectTag(uint8_t* uid, uint8_t* uidLength) {
         return false;
     }
 
-    ISO15693ErrorCode err = nfc_->getInventory(uid);
+    ISO15693ErrorCode err = EC_NO_CARD;
+    if (scanIso15693_) {
+        err = nfc_->getInventory(uid);
+        if (err == ISO15693_EC_OK) {
+            iso15693Sticky_ = true;
+            iso15693Misses_ = 0;
+        } else if (iso15693Sticky_ && ++iso15693Misses_ >= 4) {
+            iso15693Sticky_ = false;   // tag really gone: back to the short cycle
+            iso15693Misses_ = 0;
+        }
+    }
     if (err == ISO15693_EC_OK) {
         // All-zero UID = tag RF-powered but not booted; reject to avoid double-reads during activation
         bool allZero = true;
@@ -300,13 +342,17 @@ bool HardwareNFCConnection::detectTag(uint8_t* uid, uint8_t* uidLength) {
     // Fallback to ISO14443A for 4-byte and 7-byte tags (NTAG, MIFARE, etc.)
     // Dual-protocol scanner allows PN5180 (ISO15693) + PN532 (ISO14443A only) to coexist
     if (iso14443a_) {
-        iso14443a_->setupRF();
+        // After an ISO15693 attempt the reader must be switched to ISO14443A.
+        // A 14443A-only cycle already did that in setupRF().
+        if (scanIso15693_) iso14443a_->setupRF();
         // activateTypeA populates response: [0..1]=ATQA, [2]=SAK, [3..9]=UID (4, 7, or 10 bytes)
         uint8_t response[10] = {0};
         uint8_t uidLen = iso14443a_->activateTypeA(response, 1);
         if (uidLen >= 4) {
             // Reject spurious activations: ATQA/SAK all 0xFF or UID all 0x00 or 0xFF (transceiver noise)
-            if ((response[0] == 0xFF && response[1] == 0xFF) ||
+            // SAK 0xFF is likewise never valid — on a shared SPI bus a read that
+            // returns all-ones there produced plausible-looking but wrong UIDs.
+            if ((response[0] == 0xFF && response[1] == 0xFF) || response[2] == 0xFF ||
                 (response[3] == 0x00 && response[4] == 0x00 && response[5] == 0x00 && response[6] == 0x00) ||
                 (response[3] == 0xFF && response[4] == 0xFF && response[5] == 0xFF && response[6] == 0xFF)) {
                 iso14443a_->mifareHalt();
@@ -353,6 +399,11 @@ bool HardwareNFCConnection::detectTag(uint8_t* uid, uint8_t* uidLength) {
                       (int)err, nfc_->strerror(err), errCount);
     }
     return false;
+}
+
+void HardwareNFCConnection::rfOff() {
+    endTagSession();
+    if (nfc_) nfc_->setRF_off();
 }
 
 void HardwareNFCConnection::endTagSession() {

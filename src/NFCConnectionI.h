@@ -51,6 +51,10 @@ public:
     // End an active tag session (halt tag). No-op if no session is active.
     virtual void endTagSession() {}
 
+    // Switch the RF field off (hold-to-scan idle). The next setupRF() turns it
+    // back on. No-op for readers that cannot.
+    virtual void rfOff() {}
+
     // Write ISO14443A tag pages (NTAG213/215/216). Writes 4 bytes per page.
     // Returns true if all pages written successfully.
     virtual bool writeISO14443Pages(uint8_t startPage, uint8_t pageCount, const uint8_t* data, uint16_t dataLen) = 0;

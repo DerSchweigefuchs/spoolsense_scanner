@@ -220,6 +220,8 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
     bool inElement = false;
     int nestLevel = 0;   // containers nested INSIDE the current element
     bool inExtra = false;  // directly inside the element's top-level "extra" object
+    bool inTags = false;   // inside the element's top-level "tags" array (Spoolman >= 0.27)
+    bool curTagMatch = false;  // a native tag {"uid": ...} of this element matched
     int curId = -1;
     bool curArchived = false;
     char curNfcId[130];
@@ -237,9 +239,13 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
                 inExtra = false;
                 curId = -1;
                 curArchived = false;
+                curTagMatch = false;
                 curNfcId[0] = '\0';
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
@@ -251,12 +257,13 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
         if (nt == json_node_type::end_object || nt == json_node_type::end_array) {
             if (nestLevel > 0) {
                 nestLevel--;
-                if (nestLevel == 0) inExtra = false;
+                if (nestLevel == 0) { inExtra = false; inTags = false; }
                 continue;
             }
             // Element complete — evaluate
             if (!curArchived && curId >= 0 &&
-                (strcasecmp(curNfcId, uuid) == 0 || strcasecmp(curNfcId, quotedUuid) == 0)) {
+                (curTagMatch ||
+                 strcasecmp(curNfcId, uuid) == 0 || strcasecmp(curNfcId, quotedUuid) == 0)) {
                 if (curId > bestMatchId) bestMatchId = curId;
             }
             inElement = false;
@@ -270,6 +277,7 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
             fieldName[sizeof(fieldName) - 1] = '\0';
             bool topLevelField = (nestLevel == 0);
             bool fieldInExtra = (nestLevel == 1) && inExtra;
+            bool fieldInTag = (nestLevel == 2) && inTags;
             if (!reader.read()) break;
             json_node_type vt = reader.node_type();
             if (vt == json_node_type::error) { parseError = true; break; }
@@ -279,6 +287,11 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
                 if (topLevelField && vt == json_node_type::object &&
                     strcmp(fieldName, "extra") == 0) {
                     inExtra = true;
+                }
+                // Spoolman 0.27 native tags: "tags": [{"uid": "04AD...", "added": ...}]
+                if (topLevelField && vt == json_node_type::array &&
+                    strcmp(fieldName, "tags") == 0) {
+                    inTags = true;
                 }
                 nestLevel++;
                 continue;
@@ -292,6 +305,11 @@ static int streamFindSpoolByNfcId(const char* path, const char* uuid) {
                 }
             } else if (fieldInExtra && strcmp(fieldName, "nfc_id") == 0) {
                 readStringValue(reader, curNfcId, sizeof(curNfcId));
+            } else if (fieldInTag && strcmp(fieldName, "uid") == 0) {
+                char tagUid[40];
+                tagUid[0] = '\0';
+                readStringValue(reader, tagUid, sizeof(tagUid));
+                if (strcasecmp(tagUid, uuid) == 0) curTagMatch = true;
             }
         }
     }
@@ -362,6 +380,9 @@ static int streamFindVendorByName(const char* targetName, char* outName = nullpt
                 curName[0] = '\0';
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
@@ -666,6 +687,9 @@ static int streamFindFilament(int vendorId, const char* targetMaterial,
                 curMaterial[0] = curColor[0] = curName[0] = '\0';
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }
@@ -1718,6 +1742,9 @@ bool SpoolmanManager::parseSpoolCacheStream() {
                 memset(&cur, 0, sizeof(cur));
             } else if (nt == json_node_type::end_array) {
                 docComplete = true;
+                // Stop at the closing bracket: reading on blocks until the
+                // Stream timeout (1 s) when the server keeps the socket open.
+                break;
             }
             continue;
         }

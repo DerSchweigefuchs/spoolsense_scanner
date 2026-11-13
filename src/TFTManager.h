@@ -8,7 +8,7 @@
 // C5/C6 have one general-purpose SPI bus, reserved for NFC. Keeping a tiny
 // compile-time stub lets shared application code remain board-agnostic while
 // the build omits LovyanGFX and all TFT implementation objects.
-enum class TFTDriver : uint8_t { ST7789, GC9A01, ILI9341, ILI9488, ST7796 };
+enum class TFTDriver : uint8_t { ST7789, GC9A01, ILI9341, ILI9488, ST7796, ST7735 };
 
 class TFTManager : public DisplayI {
 public:
@@ -33,6 +33,8 @@ public:
     void showSpool(const DisplaySpoolData&) override {}
     void showKeypad(const char*) override {}
     void showTrayDashboard(const TrayDashboardState&) override {}
+    void showTagDetected(const char*) override {}
+    void showTagUnknown(const char*) override {}
 };
 
 #else
@@ -67,7 +69,9 @@ enum class TFTState {
     WriteResult,
     KeypadEntry,
     Error,
-    TrayDashboard
+    TrayDashboard,
+    TagDetected,   // generic tag seen, Spoolman lookup running (statusText = UID)
+    TagUnknown     // generic tag not linked in Spoolman (statusText = UID)
 };
 
 // ---------------------------------------------------------------------------
@@ -117,6 +121,8 @@ public:
     void showSpool(const DisplaySpoolData& spool) override;
     void showKeypad(const char* digits) override;
     void showTrayDashboard(const TrayDashboardState& state) override;
+    void showTagDetected(const char* uid) override;
+    void showTagUnknown(const char* uid) override;
 
 private:
     static void taskFunc(void* param);
@@ -154,6 +160,20 @@ private:
     void drawWriteResult240(LGFX_Sprite& canvas, int yOffset, bool success, const char* tagFormat);
     void drawKeypad240(LGFX_Sprite& canvas, int yOffset, const char* toolNumber);
 
+    // Compact 128x160 portrait backend (ST7735): always strip-rendered
+    // (128x32 16-bit band, 8KB transient), same body contract as render240Frame.
+    template <typename DrawFn> bool renderCompactFrame(DrawFn&& drawBody);
+    void drawHeaderCompact(LGFX_Sprite& canvas, int yOffset, uint8_t tagType);
+    void drawBootCompact(LGFX_Sprite& canvas, int yOffset, const char* version);
+    void drawReadyCompact(LGFX_Sprite& canvas, int yOffset);
+    void drawSpoolCompact(LGFX_Sprite& canvas, int yOffset, const DisplaySpoolData& spool);
+    void drawStatusCompact(LGFX_Sprite& canvas, int yOffset, const char* line1, const char* line2);
+    void drawWriteResultCompact(LGFX_Sprite& canvas, int yOffset, bool success, const char* tagFormat);
+    void drawKeypadCompact(LGFX_Sprite& canvas, int yOffset, const char* toolNumber);
+    void drawTagCompact(LGFX_Sprite& canvas, int yOffset, const char* uid, bool unknown);
+    bool renderTag(const char* uid, bool unknown);
+    // Centered text that wraps once at a space when wider than maxW.
+    void drawWrappedCompact(LGFX_Sprite& canvas, const char* text, int cx, int y, int maxW);
     // --- Drawing helpers (y arrives already band-translated by the caller) ---
     void drawWeightBar(LGFX_Sprite& canvas, int x, int y, int w, int h,
                        float remaining, float total);
@@ -196,6 +216,7 @@ private:
     bool _began = false;  // panel + bus initialized; render task must not start otherwise
     bool _fullFrame = false;  // persistent 240x240 _sprite exists; false = strip rendering
     bool _wide = false;   // panel larger than 240x240 (ILI9488) — landscape-capable
+    bool _compact = false; // 128x160 panel (ST7735) — compact portrait layout
     int  _blitOx = 0;     // centered-blit origin for the 240x240 sprite on wide panels
     int  _blitOy = 0;
     TFTState _currentState = TFTState::Boot;   // last-rendered state (drives idle status refresh)

@@ -40,6 +40,16 @@ bool g_apModeActive = false;
 static DNSServer dnsServer;
 char g_apSSID[24] = {0};
 
+// ESP32-C3 SuperMini boards ship with a poorly matched chip antenna: at the
+// default ~20 dBm TX power many units cannot associate or their AP is not
+// visible. 8.5 dBm is the widely reported working level. Set after every
+// WiFi.mode() change, since the driver re-applies its default on mode start.
+static void applyBoardTxPower() {
+#if defined(BOARD_ESP32_C3)
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+#endif
+}
+
 // PrusaLink strategy (file-scope so it outlives setup)
 static PrusaLinkStrategy prusaLinkStrategy;
 
@@ -73,6 +83,7 @@ void startAPMode() {
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   WiFi.softAP(g_apSSID);
+  applyBoardTxPower();
 
   // Captive portal: intercept DNS queries and redirect to config page
   dnsServer.start(53, "*", IPAddress(192,168,4,1));
@@ -122,6 +133,7 @@ void initWiFi() {
   WiFi.setSleep(!config.isWifiKeepAwakeEnabled());
   WiFi.setHostname(config.getHostname());
   WiFi.begin(config.getWiFiSSID(), config.getWiFiPassword());
+  applyBoardTxPower();
 
   // Status code every 3s so failures are diagnosable from serial:
   // 1=NO_SSID_AVAIL (SSID not seen), 4=CONNECT_FAILED (auth), 6=DISCONNECTED
@@ -256,6 +268,13 @@ void checkWiFi() {
 void setup() {
   delay(1000);
   Serial.begin(115200);
+#if defined(BOARD_ESP32_C3) && ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  // Serial is the USB-Serial/JTAG port here. With a cable plugged in but no
+  // program reading the port, every print blocks for its TX timeout once the
+  // small buffer is full, which stalls NFC, display and web server for
+  // seconds per tag. Drop log output instead of waiting for a reader.
+  Serial.setTxTimeoutMs(0);
+#endif
   delay(1000);
   Serial.println("=== Starting setup ===");
 
@@ -286,7 +305,12 @@ void setup() {
         tftDriver = TFTDriver::ILI9488;
     } else if (strcmp(config.getTftDriver(), "st7796") == 0) {
         tftDriver = TFTDriver::ST7796;
+    } else if (strcmp(config.getTftDriver(), "st7735") == 0) {
+        tftDriver = TFTDriver::ST7735;
     }
+#if defined(TFT_COMPACT_ONLY)
+    tftDriver = TFTDriver::ST7735;  // the only panel this build contains
+#endif
     tftManagerPtr = new TFTManager(tftDriver);
     tftManagerPtr->begin();
     // Boot screen and "initialized" only after the render task is live (#264)

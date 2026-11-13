@@ -3,10 +3,26 @@
 
 // Streaming JSON parsing utilities: NATIVE_TEST guards WiFi code, JsonFieldExtractor handles depth-aware field navigation
 #ifndef NATIVE_TEST
-HttpClientStream::HttpClientStream(WiFiClient& client) : m_stream(&client) {}
+HttpClientStream::HttpClientStream(WiFiClient& client) : m_stream(&client), m_client(&client) {}
 
-int HttpClientStream::getch() { return m_stream.getch(); }
-size_t HttpClientStream::read(uint8_t* buffer, size_t size) { return m_stream.read(buffer, size); }
+bool HttpClientStream::waitForData() {
+    const unsigned long start = millis();
+    while (!m_client->available()) {
+        if (!m_client->connected()) return false;   // closed and drained: end of body
+        if (millis() - start >= 1000) return false;  // same 1 s budget as before
+        delay(1);
+    }
+    return true;
+}
+
+int HttpClientStream::getch() {
+    if (!waitForData()) return -1;
+    return m_client->read();
+}
+size_t HttpClientStream::read(uint8_t* buffer, size_t size) {
+    if (!waitForData()) return 0;
+    return m_client->read(buffer, size);   // only what is buffered, no readBytes() timeout wait
+}
 int HttpClientStream::putch(int value) { return m_stream.putch(value); }
 size_t HttpClientStream::write(const uint8_t* source, size_t size) { return m_stream.write(source, size); }
 unsigned long long HttpClientStream::seek(long long position, seek_origin origin) { return m_stream.seek(position, origin); }

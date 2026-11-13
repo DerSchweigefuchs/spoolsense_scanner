@@ -6,6 +6,7 @@
 #include "HomeAssistantManager.h"
 #include "PrinterManager.h"
 #include "SpoolImage.h"
+#include "NFCManager.h"
 #include <WiFi.h>
 #include <Arduino.h>
 
@@ -77,12 +78,14 @@ void TFTManager::begin() {
     // Panel geometry: wide panels (ILI9488/ST7796 480x320) center the 240x240 sprite;
     // fillScreen below now clears the whole panel so no RAM-noise border shows.
     _wide = (_tft.width() > 240 || _tft.height() > 240);
+    _compact = tftIsCompact(_driver);
     _blitOx = _wide ? (_tft.width()  - 240) / 2 : 0;
     _blitOy = _wide ? (_tft.height() - 240) / 2 : 0;
     _tft.setBrightness(255);
     _tft.fillScreen(COLOR_BG);
 
 #ifdef BOARD_HAS_PSRAM
+    if (!_compact) {
     // Persistent 16-bit full framebuffer in PSRAM (240x240x2 = 115KB). On
     // failure render240Frame falls back to strip rendering, same as no-PSRAM.
     _sprite.setPsram(true);
@@ -90,6 +93,7 @@ void TFTManager::begin() {
     _fullFrame = _sprite.createSprite(240, 240);
     if (!_fullFrame) {
         Serial.println("TFTManager: PSRAM sprite failed; using strip rendering");
+    }
     }
 #endif
     // Without PSRAM no persistent framebuffer is held: render240Frame draws
@@ -365,6 +369,10 @@ void TFTManager::processQueue() {
                 case TFTState::TrayDashboard:
                     rendered = renderTrayDashboard(msg.dashboardState);
                     break;
+                case TFTState::TagDetected:
+                case TFTState::TagUnknown:
+                    rendered = renderTag(msg.statusText, msg.state == TFTState::TagUnknown);
+                    break;
             }
             // Commit state only after a successful (guarded) render, so the idle
             // status-bar refresh never paints a header over a screen that failed
@@ -397,7 +405,7 @@ void TFTManager::processQueue() {
     if (_currentState == TFTState::Ready &&
         (millis() - _lastStatusRefreshMs >= STATUS_REFRESH_MS)) {
         _lastStatusRefreshMs = millis();
-        if (_wide) {
+        if (!kTftCompactOnly && _wide) {
             refreshStatusBar();
         } else {
             taskENTER_CRITICAL(&_stateMux);
@@ -408,6 +416,36 @@ void TFTManager::processQueue() {
                 if (g) renderReady();   // repaints the header's WiFi icon
             }
         }
+    }
+
+#if PIN_SCAN_BUTTON >= 0
+    // Holding the scan button counts as activity: it wakes a timed-out screen
+    // and keeps it on while held (no tag/message needed).
+    const bool scanHeld = (digitalRead(PIN_SCAN_BUTTON) == LOW);
+    if (scanHeld) {
+        taskENTER_CRITICAL(&_stateMux);
+        bool off = _screenOff;
+        _lastActivityMs = millis();
+        taskEXIT_CRITICAL(&_stateMux);
+        if (off) {
+            SharedSPIBus::Guard busGuard;
+            if (busGuard) {
+                _tft.setBrightness(_isBreathing ? _breathBrightness : 255);
+                taskENTER_CRITICAL(&_stateMux);
+                _screenOff = false;
+                taskEXIT_CRITICAL(&_stateMux);
+            }
+        }
+    }
+
+#endif
+
+    // A tag lying on the reader counts as activity: the spool it shows stays
+    // readable for as long as it is there. The timeout starts at removal.
+    if (NFCManager::getInstance().isTagOnReader()) {
+        taskENTER_CRITICAL(&_stateMux);
+        if (!_screenOff) _lastActivityMs = millis();
+        taskEXIT_CRITICAL(&_stateMux);
     }
 
     // Screen timeout: turn off after inactivity period if configured (timeoutMs > 0)
@@ -439,7 +477,7 @@ void TFTManager::processQueue() {
 // prior full-screen landscape frame doesn't linger behind legacy views.
 // (Runs inside processQueue's shared-SPI guard; no-op on 240x240 panels.)
 void TFTManager::clearWideGutters() {
-    if (!_wide) return;
+    if (kTftCompactOnly || !_wide) return;
     const int W = _tft.width(), H = _tft.height();
     if (_blitOx > 0) {
         _tft.fillRect(0, 0, _blitOx, H, COLOR_BG);
@@ -487,6 +525,8 @@ bool TFTManager::render240Frame(DrawFn&& drawBody) {
 }
 
 bool TFTManager::renderBoot(const char* version) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawBootCompact(c, y, version); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawBoot240(c, y, version); });
 }
 
@@ -505,6 +545,8 @@ void TFTManager::drawBoot240(LGFX_Sprite& canvas, int yOffset, const char* versi
 }
 
 bool TFTManager::renderReady() {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawReadyCompact(c, y); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawReady240(c, y); });
 }
 
@@ -531,6 +573,8 @@ void TFTManager::drawReady240(LGFX_Sprite& canvas, int yOffset) {
 }
 
 bool TFTManager::renderSpoolScanned(const DisplaySpoolData& spool) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawSpoolCompact(c, y, spool); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawSpool240(c, y, spool); });
 }
 
@@ -848,6 +892,8 @@ void TFTManager::refreshStatusBar() {
 }
 
 bool TFTManager::renderStatus(const char* line1, const char* line2) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawStatusCompact(c, y, line1, line2); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawStatus240(c, y, line1, line2); });
 }
 
@@ -877,6 +923,8 @@ void TFTManager::drawStatus240(LGFX_Sprite& canvas, int yOffset,
 }
 
 bool TFTManager::renderWriteResult(bool success, const char* tagFormat) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawWriteResultCompact(c, y, success, tagFormat); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawWriteResult240(c, y, success, tagFormat); });
 }
 
@@ -908,6 +956,8 @@ void TFTManager::drawWriteResult240(LGFX_Sprite& canvas, int yOffset,
 }
 
 bool TFTManager::renderKeypadEntry(const char* toolNumber) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawKeypadCompact(c, y, toolNumber); });
     return render240Frame([&](LGFX_Sprite& c, int y) { drawKeypad240(c, y, toolNumber); });
 }
 
@@ -937,7 +987,368 @@ void TFTManager::drawKeypad240(LGFX_Sprite& canvas, int yOffset, const char* too
 }
 
 bool TFTManager::renderTrayDashboard(const TrayDashboardState& state) {
+    // The AMS dashboard is laid out for 240x240; too dense for 128x160.
+    if (kTftCompactOnly || _compact)
+        return renderStatus("Bambu AMS", "Dashboard needs a 240x240 TFT");
     return render240Frame([&](LGFX_Sprite& c, int y) { _dashboard.draw(c, y, state); });
+}
+
+// ---------------------------------------------------------------------------
+// Compact 128x160 portrait layout (ST7735)
+// ---------------------------------------------------------------------------
+// Font0 (6x8 GLCD) only: 21 columns at size 1. Bodies draw the whole virtual
+// 128x160 frame shifted by -yOffset, like the 240x240 bodies.
+
+static constexpr int kCompactW = 128;   // compact frame width
+static constexpr int kCompactH = 160;   // compact frame height
+static constexpr int kCompactHdr = 14;  // header height
+
+template <typename DrawFn>
+bool TFTManager::renderCompactFrame(DrawFn&& drawBody) {
+    const int STRIP_H = 32;
+    _strip.setColorDepth(16);
+    if (!_strip.createSprite(kCompactW, STRIP_H)) {
+        Serial.println("TFT: compact strip alloc failed");
+        return false;
+    }
+    for (int bandY = 0; bandY < kCompactH; bandY += STRIP_H) {
+        _strip.fillScreen(COLOR_BG);
+        _strip.setFont(&fonts::Font0);
+        drawBody(_strip, bandY);
+        _strip.pushSprite(0, bandY);
+    }
+    _strip.deleteSprite();
+    return true;
+}
+
+static const char* compactTagLabel(uint8_t tagType, uint32_t* color) {
+    switch (tagType) {
+        case TAG_TYPE_OPENPRINTTAG: *color = 0x4FC3F7; return "OPT";
+        case TAG_TYPE_TIGERTAG:     *color = 0xFF9800; return "TT";
+        case TAG_TYPE_OPENTAG3D:    *color = 0x4CAF50; return "OT3D";
+        case TAG_TYPE_BAMBU:        *color = 0x1DB954; return "Bambu";
+        case TAG_TYPE_NFC_PLAIN:    *color = 0x00BCD4; return "NFC+";
+        case TAG_TYPE_OPENSPOOL:    *color = 0xE91E63; return "OS";
+        default:                    return nullptr;
+    }
+}
+
+void TFTManager::drawHeaderCompact(LGFX_Sprite& canvas, int yOffset, uint8_t tagType) {
+    auto Y = [&](int y){ return y - yOffset; };
+    canvas.fillRect(0, Y(0), kCompactW, kCompactHdr, COLOR_HEADER_BG);
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_ACCENT);
+    canvas.setTextDatum(ML_DATUM);
+    canvas.drawString("SpoolSense", 3, Y(kCompactHdr / 2));
+
+    uint32_t tagColor = COLOR_SUBTEXT;
+    const char* tag = compactTagLabel(tagType, &tagColor);
+    if (tag) {
+        canvas.setTextColor(tagColor);
+        canvas.setTextDatum(MR_DATUM);
+        canvas.drawString(tag, kCompactW - 22, Y(kCompactHdr / 2));
+    }
+
+    // 4-bar WiFi indicator scaled to the 14px header (bars 3/5/7/9 px)
+    bool up = (WiFi.status() == WL_CONNECTED);
+    int rssi = up ? (int)WiFi.RSSI() : -127;
+    int level = !up ? 0 : rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -78 ? 2 : 1;
+    for (int i = 0; i < 4; i++) {
+        int h = 3 + i * 2;
+        canvas.fillRect(kCompactW - 18 + i * 4, Y(11) - h + 1, 3, h,
+                        i < level ? COLOR_ACCENT : COLOR_SPOOL_RIM);
+    }
+}
+
+void TFTManager::drawWrappedCompact(LGFX_Sprite& canvas, const char* text, int cx, int y, int maxW) {
+    if (!text || !text[0]) return;
+    canvas.setTextDatum(MC_DATUM);
+    if (canvas.textWidth(text) <= maxW) {
+        canvas.drawString(text, cx, y);
+        return;
+    }
+    // Longest prefix that fits, then back up to its last space (hard break if none).
+    char buf[64];
+    strncpy(buf, text, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    const size_t len = strlen(buf);
+    size_t fit = 1;
+    for (size_t i = 2; i < len; i++) {
+        char saved = buf[i];
+        buf[i] = '\0';
+        bool fits = canvas.textWidth(buf) <= maxW;
+        buf[i] = saved;
+        if (!fits) break;
+        fit = i;
+    }
+    size_t brk = fit;
+    for (size_t i = fit; i > 0; i--) {
+        if (buf[i] == ' ') { brk = i; break; }
+    }
+    const char* rest = buf + brk;
+    while (*rest == ' ') rest++;
+    char line2[64];
+    strncpy(line2, rest, sizeof(line2) - 1);
+    line2[sizeof(line2) - 1] = '\0';
+    buf[brk] = '\0';
+    canvas.drawString(buf, cx, y - 5);
+    canvas.drawString(line2, cx, y + 5);
+}
+
+bool TFTManager::renderTag(const char* uid, bool unknown) {
+    if (kTftCompactOnly || _compact)
+        return renderCompactFrame([&](LGFX_Sprite& c, int y) { drawTagCompact(c, y, uid, unknown); });
+    // Larger panels keep the upstream text screens (plus the UID)
+    if (tftIs480Wide(_driver))
+        return renderTextLandscape(unknown ? "Not in Spoolman" : "Tag detected", uid,
+                                   unknown ? 0xFFA726 : COLOR_BAR_FG);
+    return renderStatus(unknown ? "Not in Spoolman" : "Tag detected", uid);
+}
+
+// Tag feedback for generic (UID) tags: a green badge the moment a tag is
+// seen, then an amber one with the UID if Spoolman does not know it.
+void TFTManager::drawTagCompact(LGFX_Sprite& canvas, int yOffset, const char* uid, bool unknown) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, TAG_TYPE_NFC_PLAIN);
+    const uint32_t col = unknown ? 0xFFA726 : COLOR_BAR_FG;
+    const int cx = kCompactW / 2, cy = 46;
+
+    // Badge: ring + contactless waves (detected) or "?" (unknown)
+    canvas.fillCircle(cx, Y(cy), 24, col);
+    canvas.fillCircle(cx, Y(cy), 20, COLOR_BG);
+    if (unknown) {
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextColor(col);
+        canvas.setTextSize(3);
+        canvas.drawString("?", cx + 1, Y(cy + 1));
+    } else {
+        canvas.fillCircle(cx - 8, Y(cy), 2, col);
+        for (int i = 0; i < 3; i++) {
+            const int r = 5 + i * 5;
+            canvas.fillArc(cx - 8, Y(cy), r, r + 1, -45, 45, col);
+        }
+    }
+
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(1);
+    canvas.setTextColor(col);
+    canvas.drawString(unknown ? "Not in Spoolman" : "Tag detected", cx, Y(84));
+
+    // UID in two 7-byte-friendly halves so long 7-byte UIDs stay legible
+    canvas.setTextColor(COLOR_TEXT);
+    const size_t n = uid ? strlen(uid) : 0;
+    if (n > 0 && n <= 10) {
+        canvas.setTextSize(2);
+        canvas.drawString(uid, cx, Y(102));
+    } else if (n > 0) {
+        char a[12] = {0}, b[12] = {0};
+        const size_t half = (n + 1) / 2;
+        strncpy(a, uid, half < 11 ? half : 11);
+        strncpy(b, uid + half, 11);
+        canvas.setTextSize(2);
+        if (canvas.textWidth(a) > kCompactW - 4) canvas.setTextSize(1);
+        canvas.drawString(a, cx, Y(100));
+        canvas.drawString(b, cx, Y(118));
+    }
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_SUBTEXT);
+    if (unknown) {
+        // Where to link it: the reader page of this scanner
+        char ip[24];
+        snprintf(ip, sizeof(ip), "%s/reader", WiFi.localIP().toString().c_str());
+        canvas.drawString("Link at", cx, Y(136));
+        canvas.drawString(ip, cx, Y(148));
+    } else {
+        canvas.drawString("Checking Spoolman...", cx, Y(140));
+    }
+}
+
+void TFTManager::drawBootCompact(LGFX_Sprite& canvas, int yOffset, const char* version) {
+    auto Y = [&](int y){ return y - yOffset; };
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextColor(COLOR_ACCENT);
+    canvas.setTextSize(2);
+    canvas.drawString("SpoolSense", kCompactW / 2, Y(kCompactH / 2 - 10));
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_SUBTEXT);
+    canvas.drawString(version, kCompactW / 2, Y(kCompactH / 2 + 12));
+}
+
+void TFTManager::drawReadyCompact(LGFX_Sprite& canvas, int yOffset) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, TAG_TYPE_UNKNOWN);
+    // Idle: grey spool = no spool on the reader (scanning is continuous)
+    drawSpoolImage(canvas, kCompactW / 2, (kCompactH + kCompactHdr) / 2, 0x888888, yOffset, 100);
+}
+
+void TFTManager::drawSpoolCompact(LGFX_Sprite& canvas, int yOffset, const DisplaySpoolData& spool) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, spool.tagType);
+
+    // Colour spool on the left, material + brand on the right
+    const uint32_t fill = hexToRgb(spool.colorHex);
+    drawSpoolImage(canvas, 29, 44, fill, yOffset, 52);
+
+    const int textX = 58;
+    const int textW = kCompactW - textX - 2;  // 68px = 11 columns at size 1
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextColor(COLOR_TEXT);
+    canvas.setTextSize(2);
+    if (canvas.textWidth(spool.material) > textW) canvas.setTextSize(1);
+    canvas.drawString(spool.material[0] ? spool.material : "?", textX, Y(20));
+
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_SUBTEXT);
+    {
+        // Brand on up to two 11-column lines
+        char l1[12] = {0}, l2[12] = {0};
+        const size_t cols = sizeof(l1) - 1;
+        size_t n = strlen(spool.brand);
+        if (n <= cols) {
+            strncpy(l1, spool.brand, cols);
+        } else {
+            size_t brk = cols;
+            for (size_t i = cols; i > 0; i--) if (spool.brand[i] == ' ') { brk = i; break; }
+            strncpy(l1, spool.brand, brk);
+            const char* rest = spool.brand + brk;
+            while (*rest == ' ') rest++;
+            strncpy(l2, rest, cols);
+        }
+        canvas.drawString(l1, textX, Y(40));
+        if (l2[0]) canvas.drawString(l2, textX, Y(50));
+    }
+    if (spool.colorHex[0]) {
+        char hex[9];
+        snprintf(hex, sizeof(hex), "#%s", spool.colorHex);
+        canvas.fillRect(textX, Y(61), 7, 7, fill);
+        canvas.drawRect(textX, Y(61), 7, 7, 0x555555);
+        canvas.drawString(hex, textX + 10, Y(61));
+    }
+
+    // Weight block
+    if (spool.remainingWeight > 0 || spool.totalWeight > 0) {
+        char w[16];
+        snprintf(w, sizeof(w), "%.0f g", spool.remainingWeight);
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextColor(COLOR_TEXT);
+        canvas.setTextSize(2);
+        canvas.drawString(w, 4, Y(78));
+        if (spool.totalWeight > 0) {
+            float ratio = spool.remainingWeight / spool.totalWeight;
+            if (ratio < 0) ratio = 0;
+            if (ratio > 1) ratio = 1;
+            char pct[8];
+            snprintf(pct, sizeof(pct), "%d%%", (int)(ratio * 100.0f + 0.5f));
+            canvas.setTextSize(1);
+            canvas.setTextDatum(TR_DATUM);
+            canvas.setTextColor(ratio <= 0.1f ? COLOR_BAR_LOW : COLOR_BAR_FG);
+            canvas.drawString(pct, kCompactW - 4, Y(82));
+            drawWeightBar(canvas, 4, Y(96), kCompactW - 8, 7, spool.remainingWeight, spool.totalWeight);
+            char of[24];
+            snprintf(of, sizeof(of), "of %.0f g", spool.totalWeight);
+            canvas.setTextDatum(TL_DATUM);
+            canvas.setTextColor(COLOR_SUBTEXT);
+            canvas.drawString(of, 4, Y(106));
+        }
+    } else {
+        canvas.setTextSize(1);
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextColor(COLOR_SUBTEXT);
+        canvas.drawString("Weight unknown", 4, Y(82));
+    }
+
+    // Detail rows (Spoolman data; each item only when known)
+    canvas.drawFastHLine(4, Y(118), kCompactW - 8, COLOR_SPOOL_RIM);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(TL_DATUM);
+    int rowY = 123;
+    auto label = [&](const char* text, int x, int y) {
+        canvas.setTextColor(COLOR_SUBTEXT);
+        canvas.drawString(text, x, Y(y));
+        return x + canvas.textWidth(text);
+    };
+    auto value = [&](const char* text, int x, int y) {
+        canvas.setTextColor(COLOR_TEXT);
+        canvas.drawString(text, x, Y(y));
+        return x + canvas.textWidth(text);
+    };
+    // Font0 has no degree glyph: draw a 1px ring before the "C"
+    auto temp = [&](int16_t t, int x, int y) {
+        char v[8];
+        snprintf(v, sizeof(v), "%d", (int)t);
+        x = value(v, x, y);
+        canvas.drawCircle(x + 2, Y(y) + 1, 1, COLOR_TEXT);
+        return value("C", x + 5, y);
+    };
+    // Row 1: nozzle temp | Spoolman ID      Row 2: bed temp | diameter
+    auto right = [&](const char* text, uint32_t color, int y) {
+        canvas.setTextDatum(TR_DATUM);
+        canvas.setTextColor(color);
+        canvas.drawString(text, kCompactW - 4, Y(y));
+        canvas.setTextDatum(TL_DATUM);
+    };
+    if (spool.extruderTemp > 0) temp(spool.extruderTemp, label("Nozzle ", 4, rowY), rowY);
+    if (spool.spoolmanId > 0) {
+        char id[12];
+        snprintf(id, sizeof(id), "#%ld", (long)spool.spoolmanId);
+        right(id, COLOR_ACCENT, rowY);
+    }
+    rowY += 12;
+    if (spool.bedTemp > 0) temp(spool.bedTemp, label("Bed ", 4, rowY), rowY);
+    if (spool.diameterMm > 0) {
+        char d[12];
+        snprintf(d, sizeof(d), "%.2f mm", spool.diameterMm);
+        right(d, COLOR_TEXT, rowY);
+    }
+}
+
+void TFTManager::drawStatusCompact(LGFX_Sprite& canvas, int yOffset,
+                                   const char* line1, const char* line2) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, TAG_TYPE_UNKNOWN);
+    const int cy = (kCompactH + kCompactHdr) / 2;
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextColor(COLOR_TEXT);
+    canvas.setTextSize(2);
+    if (canvas.textWidth(line1) > kCompactW - 6) canvas.setTextSize(1);
+    canvas.drawString(line1, kCompactW / 2, Y(line2 ? cy - 12 : cy));
+    if (line2) {
+        canvas.setTextSize(1);
+        canvas.setTextColor(COLOR_SUBTEXT);
+        drawWrappedCompact(canvas, line2, kCompactW / 2, Y(cy + 12), kCompactW - 6);
+    }
+}
+
+void TFTManager::drawWriteResultCompact(LGFX_Sprite& canvas, int yOffset,
+                                        bool success, const char* tagFormat) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, TAG_TYPE_UNKNOWN);
+    canvas.fillCircle(kCompactW / 2, Y(62), 18, success ? COLOR_BAR_FG : COLOR_BAR_LOW);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextColor(COLOR_BG);
+    canvas.setTextSize(2);
+    canvas.drawString(success ? "OK" : "X", kCompactW / 2, Y(62));
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_TEXT);
+    canvas.drawString(success ? "Write OK" : "Write failed", kCompactW / 2, Y(96));
+    canvas.setTextColor(COLOR_SUBTEXT);
+    canvas.drawString(tagFormat, kCompactW / 2, Y(110));
+}
+
+void TFTManager::drawKeypadCompact(LGFX_Sprite& canvas, int yOffset, const char* toolNumber) {
+    auto Y = [&](int y){ return y - yOffset; };
+    drawHeaderCompact(canvas, yOffset, TAG_TYPE_UNKNOWN);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_SUBTEXT);
+    canvas.drawString("Assign to tool:", kCompactW / 2, Y(50));
+    canvas.setTextSize(4);
+    canvas.setTextColor(COLOR_TEXT);
+    canvas.drawString(toolNumber, kCompactW / 2, Y(84));
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_SUBTEXT);
+    canvas.drawString("Press # to confirm", kCompactW / 2, Y(124));
 }
 
 // ---------------------------------------------------------------------------
@@ -1022,6 +1433,24 @@ uint32_t TFTManager::dimColor(uint32_t color, uint8_t brightness) {
 }
 
 // DisplayI interface — renders text using the TFT status screen
+void TFTManager::showTagDetected(const char* uid) {
+    TFTMessage msg{};
+    msg.state = TFTState::TagDetected;
+    snprintf(msg.statusText, sizeof(msg.statusText), "%s", uid ? uid : "");
+    if (_messageQueue && xQueueSend(_messageQueue, &msg, 0) != pdTRUE) {
+        Serial.println("TFTManager: Queue full, dropped display update");
+    }
+}
+
+void TFTManager::showTagUnknown(const char* uid) {
+    TFTMessage msg{};
+    msg.state = TFTState::TagUnknown;
+    snprintf(msg.statusText, sizeof(msg.statusText), "%s", uid ? uid : "");
+    if (_messageQueue && xQueueSend(_messageQueue, &msg, 0) != pdTRUE) {
+        Serial.println("TFTManager: Queue full, dropped display update");
+    }
+}
+
 void TFTManager::showText(const char* line1, const char* line2) {
     TFTMessage msg{};
     msg.state = TFTState::WifiConnecting; // generic two-line status renderer
@@ -1143,7 +1572,7 @@ void TFTManager::freeForOTA() {
     // Status text
     int cx = _tft.width() / 2;
     _tft.setTextColor(COLOR_TEXT);
-    _tft.setTextSize(2);
+    _tft.setTextSize(_tft.width() >= 200 ? 2 : 1);  // 11 chars x 12px overflows 128px
     _tft.setTextDatum(MC_DATUM);
     _tft.drawString("Updating...", cx, 80);
 

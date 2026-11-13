@@ -606,6 +606,11 @@ bool ConfigurationManager::isLcdEnabled() const {
 }
 
 bool ConfigurationManager::isLedEnabled() const {
+#if PIN_TFT_BL >= 0
+    // C3: the default status-LED GPIO doubles as the TFT backlight PWM pin.
+    // Driving NeoPixel data on it would flicker the backlight and fight LEDC.
+    if (_ledEnabled && _tftEnabled && getLedPin() == (uint8_t)PIN_TFT_BL) return false;
+#endif
     return _ledEnabled;
 }
 

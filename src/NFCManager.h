@@ -61,6 +61,9 @@ struct GenericTagSpoolInfo {
     int32_t spoolman_id;
     int16_t extruder_temp;
     int16_t bed_temp;
+    float diameter_mm;
+    float density;
+    float initial_weight_g;
     bool valid;
 };
 
@@ -69,6 +72,9 @@ public:
     static NFCManager& getInstance();
     bool begin();                                    // Init hardware + queues
     bool startScanTask();                            // Start FreeRTOS scan task; true only if the task is live
+    // True while a tag is on the reader. Unsynchronised read of a flag only
+    // the scan task writes; good enough for "keep the screen on".
+    bool isTagOnReader() const { return lastSeenValid; }
     bool enqueueWrite(const NFCWriteRequest& req);   // Queue a write request
     bool enqueueRawWrite(const NFCWriteRequest& req, const uint8_t* data, size_t dataSize);
     bool enqueueOpenTag3DPatch(const NFCWriteRequest& req, const opentag3d_patch_t& patch);
@@ -149,6 +155,8 @@ private:
     void scanLoop();
     bool prepareRF();
     bool isSkippableDuplicate(const uint8_t* uid, uint8_t uidLength);
+    void restoreLastSeenIfCurrent(const uint8_t* uid, uint8_t uidLength);
+    bool writeLinkedSpoolmanDataAsOpenSpool();  // scan button: blank tag linked in Spoolman
     void recordSelectedUid(const uint8_t* uid, uint8_t uidLength);
     void clearSelectedUid();
     void handleNewTag(uint8_t* uid, uint8_t uidLength);
@@ -203,7 +211,13 @@ private:
     // currentSpool.spool_id this is refreshed even when the cooldown dedup
     // skips handleNewTag(), which is the whole point of #276.
     char selectedUidHex_[17] = {0};
-    uint8_t absentMisses_ = 0;               // consecutive failed detects while a tag was present
+    uint8_t absentMisses_ = 0;
+    uint16_t idleCyclesSinceReset_ = 0;  // idle cycles since the last PN5180 hard reset
+    bool forceRfReset_ = false;   // hard-reset the PN5180 next cycle even with a tag present
+    uint8_t rfTraceBudget_ = 0;   // per-cycle trace lines left after an RF failure
+    bool scanGateEnabled_ = false;   // hold-to-scan button (PIN_SCAN_BUTTON) active
+    bool gateRfOff_ = false;         // field already switched off while released
+    bool buttonWasDown_ = false;     // press-edge detection (re-read mode)               // consecutive failed detects while a tag was present
     static constexpr uint8_t TAG_ABSENT_MISS_THRESHOLD = 3;  // ~150ms at 50ms poll before declaring removal
 
     // Recent spools history (RAM only, most recent first)

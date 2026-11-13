@@ -16,6 +16,9 @@
   #include "LogBuffer.h"
   #include "MemoryDiagnostics.h"
   #include "TaskUtils.h"
+  #include "BoardPins.h"
+  #include "ConfigurationManager.h"
+  #include <ArduinoJson.h>
   #include <Arduino.h>
   #include <esp_arduino_version.h>
 #else
@@ -462,7 +465,7 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
             if (!isOpenTag3D) {
                 const char* jsonMime = "application/json";
                 if (rec.mimeLen == strlen(jsonMime) && memcmp(rec.mimeType, jsonMime, rec.mimeLen) == 0) {
-                    uint8_t payload[256];
+                    uint8_t payload[RAW_WRITE_BUFFER_SIZE];  // as large as the writer can stage
                     SCAN_PHASE(23);
                     uint16_t payloadBytes = readNdefPayload(rec, pageData, bytesRead, payload, sizeof(payload),
                                                             effectiveUserMemoryEnd(scan.variant, scan.cc_user_end));
@@ -565,6 +568,10 @@ void NFCManager::readAndProcessISO14443Tag(const uint8_t* uid, uint8_t uidLength
 
 // ── Scan loop helpers ───────────────────────────────────────
 
+#ifndef NFC_IDLE_RESET_INTERVAL
+#define NFC_IDLE_RESET_INTERVAL 1
+#endif
+
 bool NFCManager::prepareRF() {
     if (consecutiveFailures_ >= RESTART_THRESHOLD) {
         Serial.println("NFCManager: CRITICAL - too many consecutive failures, restarting ESP");
@@ -577,27 +584,115 @@ bool NFCManager::prepareRF() {
         attemptRecovery();
     }
 
-    // Full hardware reset only when no tag present — reset cuts RF, de-powering passive tags
-    if (!lastSeenValid) {
+    // Full hardware reset only when no tag present — reset cuts RF, de-powering passive tags —
+    // or once after an RF failure.
+    // NFC_IDLE_RESET_INTERVAL = 1 resets on every idle cycle; boards with an
+    // expensive scan cycle reset only every Nth idle cycle.
+    const bool idleResetDue = !lastSeenValid &&
+                              (++idleCyclesSinceReset_ >= NFC_IDLE_RESET_INTERVAL);
+    const bool resetNow = idleResetDue || forceRfReset_;
+    if (resetNow) {
         connection_->reset();
+        forceRfReset_ = false;
+        idleCyclesSinceReset_ = 0;
     }
     if (!connection_->setupRF()) {
         consecutiveFailures_++;
         Serial.printf("NFCManager: setupRF() failed (consecutive=%lu, lastSeenValid=%d)\n",
                       consecutiveFailures_, lastSeenValid ? 1 : 0);
-        if (lastSeenValid) {
-            Serial.println("NFCManager: clearing lastSeenValid to force hardware reset");
-            lastSeenValid = false;
-        }
+        // Reset the reader next cycle but keep the tag state: clearing
+        // lastSeenValid here meant a tag lifted meanwhile was never reported
+        // as removed (display, web UI and MQTT kept showing it).
+        forceRfReset_ = true;
+        rfTraceBudget_ = 60;  // trace the next cycles: how long until a tag is seen again
         return false;
     }
 
     // Give tag time to power up after RF field reset
-    if (!lastSeenValid) {
+    if (resetNow) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     consecutiveFailures_ = 0;
     return true;
+}
+
+void NFCManager::restoreLastSeenIfCurrent(const uint8_t* uid, uint8_t uidLength) {
+    if (uidLength == 0 || uidLength > sizeof(lastSeenUid)) return;
+    if (xSemaphoreTake(tagMutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    if (currentSpool.present && uidLength == currentSpool.uid_length &&
+        memcmp(uid, currentSpool.uid, uidLength) == 0) {
+        memcpy(lastSeenUid, uid, uidLength);
+        lastSeenUidLength = uidLength;
+        lastSeenValid = true;
+        lastSeenMs = millis();
+    }
+    xSemaphoreGive(tagMutex);
+}
+
+bool NFCManager::writeLinkedSpoolmanDataAsOpenSpool() {
+#ifdef NATIVE_TEST
+    return false;
+#else
+    // Blank tags, and OpenSpool tags (refresh them from Spoolman, e.g. after
+    // the filament was edited there). Other formats are left alone.
+    if (!lastSeenValid || !currentSpool.present ||
+        (currentSpool.kind != TagKind::GenericUidTag &&
+         currentSpool.kind != TagKind::OpenSpoolTag)) {
+        return false;
+    }
+    GenericTagSpoolInfo info;
+    getGenericTagSpoolInfo(info);
+    if (!info.valid || info.spoolman_id <= 0) {
+        Serial.println("NFCManager: scan button — tag not linked in Spoolman, nothing to write");
+        return false;
+    }
+
+    const char* color = info.color_hex[0] == '#' ? info.color_hex + 1 : info.color_hex;
+    char temp[8];
+    JsonDocument tagDoc;
+    tagDoc["protocol"] = "openspool";
+    tagDoc["version"] = "1.0";
+    tagDoc["type"] = info.material_type[0] ? info.material_type : "PLA";
+    tagDoc["color_hex"] = color[0] ? color : "FFFFFF";
+    tagDoc["brand"] = info.manufacturer;
+    if (info.extruder_temp > 0) {
+        snprintf(temp, sizeof(temp), "%d", info.extruder_temp);
+        tagDoc["min_temp"] = temp;
+        tagDoc["max_temp"] = temp;
+    }
+    // Extension fields: everything about the filament that does not change
+    // while printing. The fill level stays in Spoolman.
+    if (info.bed_temp > 0) {
+        tagDoc["bed_min_temp"] = info.bed_temp;
+        tagDoc["bed_max_temp"] = info.bed_temp;
+    }
+    if (info.diameter_mm > 0.0f) tagDoc["diameter"] = serialized(String(info.diameter_mm, 2));
+    if (info.density > 0.0f) tagDoc["density"] = serialized(String(info.density, 2));
+    if (info.initial_weight_g > 0.0f) tagDoc["weight"] = (int)(info.initial_weight_g + 0.5f);
+    tagDoc["spoolman_id"] = info.spoolman_id;
+
+    char payload[RAW_WRITE_BUFFER_SIZE];
+    size_t len = serializeJson(tagDoc, payload, sizeof(payload));
+    if (len == 0 || len >= sizeof(payload)) {
+        Serial.println("NFCManager: scan button — OpenSpool payload too large");
+        return false;
+    }
+
+    NFCWriteRequest req;
+    memset(&req, 0, sizeof(req));
+    req.request_id = generateRequestId();
+    req.type = NFCWriteType::WRITE_OPENSPOOL;
+    strncpy(req.expected_spool_id, currentSpool.spool_id, sizeof(req.expected_spool_id) - 1);
+    if (!enqueueRawWrite(req, (const uint8_t*)payload, len)) {
+        Serial.println("NFCManager: scan button — write queue busy");
+        return false;
+    }
+    Serial.printf("NFCManager: scan button — writing Spoolman spool %ld to %s as OpenSpool: %s\n",
+                  (long)info.spoolman_id, currentSpool.spool_id, payload);
+    LogBuffer::getInstance().logPrintf("Write Spoolman #%ld -> %s (OpenSpool)\n",
+                                       (long)info.spoolman_id, currentSpool.spool_id);
+    return true;
+#endif
 }
 
 // Skip re-reading a tag we already processed, or one being actively written to
@@ -790,6 +885,22 @@ void NFCManager::scanLoop() {
     connection_->setupRF();
     connection_->logDiagnostics();
 
+#if PIN_SCAN_BUTTON >= 0 && !defined(NATIVE_TEST)
+    // Scan button (see BoardPins.h). Skipped when the button GPIO is an I2C
+    // line of an enabled LCD (C3: GPIO 9 = SCL).
+    {
+        const auto& cfg = ConfigurationManager::getInstance();
+        const bool pinIsLcd = cfg.isLcdEnabled() && !cfg.isTftEnabled() &&
+                              (PIN_SCAN_BUTTON == PIN_LCD_SCL || PIN_SCAN_BUTTON == PIN_LCD_SDA);
+        scanGateEnabled_ = !pinIsLcd;
+        if (scanGateEnabled_) {
+            pinMode(PIN_SCAN_BUTTON, INPUT_PULLUP);
+            Serial.printf("NFCManager: scan button on GPIO %d (%s)\n", PIN_SCAN_BUTTON,
+                          SCAN_BUTTON_HOLD_TO_SCAN ? "hold-to-scan" : "press = re-read");
+        }
+    }
+#endif
+
     while (true) {
 #ifndef NATIVE_TEST
         esp_task_wdt_reset();
@@ -810,18 +921,73 @@ void NFCManager::scanLoop() {
             }
             scanPaused_ = false;
         }
+#if PIN_SCAN_BUTTON >= 0 && !defined(NATIVE_TEST)
+    #if SCAN_BUTTON_HOLD_TO_SCAN
+        // Button released: field off, tag state frozen (the display keeps the
+        // last spool; queued writes wait for the next press).
+        if (scanGateEnabled_ && digitalRead(PIN_SCAN_BUTTON) == HIGH) {
+            if (!gateRfOff_) {
+                connection_->rfOff();
+                gateRfOff_ = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (gateRfOff_) {
+            // New press: forget the frozen tag so only what is on the reader
+            // now gets reported. Otherwise the web UI ("Read Tag UID", /reader)
+            // instantly picks up the previous tag's UID from /api/status.
+            handleTagAbsent();
+            absentMisses_ = 0;
+        }
+        gateRfOff_ = false;
+    #else
+        // Continuous scanning; a press (edge) forgets the current tag so the
+        // next cycle re-reads it and refreshes its Spoolman data on screen.
+        if (scanGateEnabled_) {
+            const bool down = digitalRead(PIN_SCAN_BUTTON) == LOW;
+            if (down && !buttonWasDown_) {
+                // A blank tag that Spoolman knows by its UID gets the Spoolman
+                // data written to it (OpenSpool, NTAG215/216). Otherwise the
+                // press re-reads the tag on the reader.
+                if (!writeLinkedSpoolmanDataAsOpenSpool()) {
+                    Serial.println("NFCManager: scan button — re-reading tag");
+                    handleTagAbsent();
+                    absentMisses_ = 0;
+                }
+            }
+            buttonWasDown_ = down;
+        }
+    #endif
+#endif
         SCAN_PHASE(1);
         uint8_t uid[8];
         uint8_t uidLength = 0;
 
         SCAN_PHASE(2);
+        const uint32_t cycleStartMs = millis();
+        const bool rfTrace = rfTraceBudget_ > 0;
         if (!prepareRF()) {
+            if (rfTrace) {
+                rfTraceBudget_--;
+                Serial.printf("NFC trace: prepareRF FAILED after %lums\n",
+                              (unsigned long)(millis() - cycleStartMs));
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
         SCAN_PHASE(3);
-        if (connection_->detectTag(uid, &uidLength)) {
+        const uint32_t detectStartMs = millis();
+        const bool detected = connection_->detectTag(uid, &uidLength);
+        if (rfTrace) {
+            rfTraceBudget_ = detected ? 0 : rfTraceBudget_ - 1;
+            Serial.printf("NFC trace: rf %lums, detect %lums -> %s\n",
+                          (unsigned long)(detectStartMs - cycleStartMs),
+                          (unsigned long)(millis() - detectStartMs),
+                          detected ? "TAG" : "none");
+        }
+        if (detected) {
             absentMisses_ = 0;
             if (!lastSeenValid || memcmp(uid, lastSeenUid, uidLength) != 0) {
                 char uidHex[17]; uidHex[0] = '\0';
@@ -839,6 +1005,13 @@ void NFCManager::scanLoop() {
             if (!isSkippableDuplicate(uid, uidLength)) {
                 SCAN_PHASE(5);
                 handleNewTag(uid, uidLength);
+            } else if (!lastSeenValid) {
+                // A setupRF() failure cleared lastSeenValid while the tag stayed
+                // on the reader. The duplicate check skips handleNewTag(), the
+                // only place that sets it again, so without this every later
+                // cycle hard-resets the PN5180 (de-powering the tag) and logs
+                // "Tag detected!" until the tag is removed.
+                restoreLastSeenIfCurrent(uid, uidLength);
             }
             SCAN_PHASE(6);
             processWriteQueue();
@@ -910,6 +1083,7 @@ bool NFCManager::readAndParseTag(uint8_t* uid, uint8_t uid_length) {
 
     currentSpool.present = true;
     currentSpool.tag_data_valid = true;
+    currentSpool.kind = TagKind::OpenPrintTag;    // was left at the previous tag's kind
     currentSpool.variant = NtagVariant::Unknown;  // ISO15693 — no NTAG identity here
     currentSpool.cc_user_end = 0;
 
@@ -1218,6 +1392,10 @@ void NFCManager::sendBambuDetectedMessage() {
     msg.payload.spoolDetected.material_type = materialTypeFromString(bt.filament_type);
     strncpy(msg.payload.spoolDetected.material_name, bt.filament_type,
             sizeof(msg.payload.spoolDetected.material_name) - 1);
+    // Bambu tags carry no brand field; they only exist on Bambu Lab spools.
+    // Without this, Spoolman sync files them under a vendor named "Unknown".
+    strncpy(msg.payload.spoolDetected.manufacturer, "Bambu Lab",
+            sizeof(msg.payload.spoolDetected.manufacturer) - 1);
 
     msg.payload.spoolDetected.primary_color[0] = bt.color_r;
     msg.payload.spoolDetected.primary_color[1] = bt.color_g;
@@ -1499,9 +1677,17 @@ void NFCManager::sendOpenSpoolMessage(const char* uid, const OpenSpoolData& os) 
 
     s.min_print_temp = os.min_temp;
     s.max_print_temp = os.max_temp;
+    s.min_bed_temp = os.bed_min_temp;
+    s.max_bed_temp = os.bed_max_temp;
+    s.diameter = os.diameter_mm;
+    s.density = os.density;
+    // The tag's weight is the full spool size, not a fill level: flag it
+    // nominal so it is never synced into Spoolman as remaining weight.
+    s.initial_weight_g = os.weight_g;
+    s.weight_is_nominal = true;
 
     strncpy(s.tag_format, "OpenSpool", sizeof(s.tag_format) - 1);
-    s.spoolman_id = -1;
+    s.spoolman_id = os.spoolman_id > 0 ? os.spoolman_id : -1;
 
     Serial.println("--- OpenSpool SpoolDetected payload ---");
     Serial.printf("  uid:          %s\n", s.spool_id);
@@ -2281,11 +2467,14 @@ bool NFCManager::executeOpenSpoolWrite(const NFCWriteRequest& request) {
         return false;
     }
 
-    // The payload is copied into ndefBuf and the slot freed in one step
-    uint8_t ndefBuf[256];
+    // The payload is copied into the shared NDEF scratch and the slot freed in
+    // one step. A 256 byte stack buffer was too small for a payload with the
+    // extension fields; writes run one at a time on the NFC task, so the
+    // scratch is free here.
+    uint8_t* const ndefBuf = ndefScratch_;
     uint16_t ndefLen = 0;
     bool staged = rawWriteSlot_.consume(request.request_id, [&](const uint8_t* d, size_t n) {
-        ndefLen = buildNdefMimeTlv("application/json", d, (uint16_t)n, ndefBuf, sizeof(ndefBuf));
+        ndefLen = buildNdefMimeTlv("application/json", d, (uint16_t)n, ndefBuf, sizeof(ndefScratch_));
     });
     if (!staged) {
         Serial.println("NFCManager: WRITE_OPENSPOOL - no raw data staged for this request");
@@ -2465,7 +2654,9 @@ bool NFCManager::executeWrite(const NFCWriteRequest& request) {
         return false;
     }
 
-    if (!currentSpool.tag_data_valid) {
+    // tag_data holds OpenPrintTag CBOR only; never write it to another kind
+    // of tag (a Bambu tag sets tag_data_valid for its own decoded blocks).
+    if (!currentSpool.tag_data_valid || currentSpool.kind != TagKind::OpenPrintTag) {
         xSemaphoreGive(tagMutex);
         return false;
     }
@@ -2688,6 +2879,15 @@ bool NFCManager::isDuplicateSpool(const uint8_t* uid, uint8_t uid_length) {
         uid_length == currentSpool.uid_length &&
         memcmp(uid, currentSpool.uid, uid_length) == 0) {
         return true;
+    }
+
+    // The same tag put back (or re-found after a debounced removal) right
+    // after "Tag removed": process it again. The cooldown below would skip
+    // it for 3 s while lastSeenValid stays false, which hard-resets the
+    // PN5180 every cycle and logs "Tag detected!" without reading the tag.
+    if (!currentSpool.present && uid_length == lastSeenUidLength &&
+        memcmp(uid, lastSeenUid, uid_length) == 0) {
+        return false;
     }
 
     // Cooldown: suppress re-reads within 3s where first 3 bytes match.

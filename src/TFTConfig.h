@@ -4,7 +4,8 @@
 #include "BoardPins.h"
 
 // ---------------------------------------------------------------------------
-// LovyanGFX display config — runtime panel selection (ST7789 or GC9A01).
+// LovyanGFX display config — runtime panel selection (ST7789, GC9A01, ILI9341,
+// ILI9488, ST7796, ST7735).
 //
 // Both panels are 240x240 SPI. Same pins, same bus, different driver IC.
 // The panel type is selected at construction via a string parameter
@@ -20,13 +21,36 @@ enum class TFTDriver : uint8_t {
     GC9A01 = 1,
     ILI9341 = 2,   // 240x320 — dashboard centered with 40px letterbox
     ILI9488 = 3,   // 320x480 — dashboard centered
-    ST7796 = 4     // 320x480 — dashboard centered, like ILI9488
+    ST7796 = 4,    // 320x480 — dashboard centered, like ILI9488
+    ST7735 = 5     // 128x160 portrait — own compact layout (TFTManager *Compact)
 };
+
+// TFT_COMPACT_ONLY (C3 build flag): only the ST7735 compact layout is built,
+// so the linker drops the 240x240 / 480x320 renderers, the AMS dashboard and
+// the other panel drivers — the C3 image sits at its flash budget.
+#if defined(TFT_COMPACT_ONLY)
+static constexpr bool kTftCompactOnly = true;
+#else
+static constexpr bool kTftCompactOnly = false;
+#endif
 
 // 480x320 panels share the centered-sprite / wide-landscape geometry.
 inline bool tftIs480Wide(TFTDriver d) {
-    return d == TFTDriver::ILI9488 || d == TFTDriver::ST7796;
+    return !kTftCompactOnly && (d == TFTDriver::ILI9488 || d == TFTDriver::ST7796);
 }
+
+// Panels smaller than 240x240 render the compact 128x160 layout.
+inline bool tftIsCompact(TFTDriver d) {
+    return kTftCompactOnly || d == TFTDriver::ST7735;
+}
+
+// 1.8" ST7735S 128x160 modules (red PCB, "1.8 TFT SPI 128*160"): the glass
+// sits at column 2 / row 1 of the controller RAM and the panel is BGR. Tested
+// on a C3 SuperMini bench rig; other ST7735 variants (green/black tab) may
+// need different offsets.
+static constexpr int ST7735_OFFSET_X = 2;
+static constexpr int ST7735_OFFSET_Y = 1;
+static constexpr uint32_t ST7735_SPI_HZ = 27000000;
 
 #if defined(BOARD_ESP32_S3)
 
@@ -36,6 +60,7 @@ class LGFX : public lgfx::LGFX_Device {
     lgfx::Panel_ILI9341 _panel_ili9341;
     lgfx::Panel_ILI9488 _panel_ili9488;
     lgfx::Panel_ST7796  _panel_st7796;
+    lgfx::Panel_ST7735S _panel_st7735;
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
 
@@ -50,7 +75,7 @@ public:
             cfg.spi_host   = SPI2_HOST;  // FSPI on S3-Zero
 #endif
             cfg.spi_mode   = 0;
-            cfg.freq_write = 40000000;
+            cfg.freq_write = (driver == TFTDriver::ST7735) ? ST7735_SPI_HZ : 40000000;
             cfg.freq_read  = 16000000;
             cfg.pin_sclk   = PIN_TFT_SCLK;
             cfg.pin_mosi   = PIN_TFT_MOSI;
@@ -79,6 +104,8 @@ public:
             panel = &_panel_ili9488;
         } else if (driver == TFTDriver::ST7796) {
             panel = &_panel_st7796;
+        } else if (driver == TFTDriver::ST7735) {
+            panel = &_panel_st7735;
         } else {
             panel = &_panel_st7789;
         }
@@ -106,6 +133,13 @@ public:
                 cfg.panel_height  = 480;
                 cfg.offset_x      = 0;
                 cfg.offset_y      = 0;
+            } else if (driver == TFTDriver::ST7735) {
+                cfg.memory_width  = 128;
+                cfg.memory_height = 160;
+                cfg.panel_width   = 128;
+                cfg.panel_height  = 160;
+                cfg.offset_x      = ST7735_OFFSET_X;
+                cfg.offset_y      = ST7735_OFFSET_Y;
             } else {
                 cfg.memory_width  = 240;
                 cfg.memory_height = 240;
@@ -126,9 +160,9 @@ public:
             cfg.dummy_read_bits  = 1;
             cfg.readable     = false;
             cfg.invert       = (driver == TFTDriver::ILI9341 || driver == TFTDriver::ILI9488 ||
-                                driver == TFTDriver::ST7796)
+                                driver == TFTDriver::ST7796 || driver == TFTDriver::ST7735)
                                    ? false : true;
-            cfg.rgb_order    = false;
+            cfg.rgb_order    = (driver == TFTDriver::ST7735);  // BGR glass
             cfg.dlen_16bit   = false;
             cfg.bus_shared   = false;
             panel->config(cfg);
@@ -152,16 +186,22 @@ public:
 #else // WROOM or single-SPI C3/C5/C6
 
 class LGFX : public lgfx::LGFX_Device {
+#if !defined(TFT_COMPACT_ONLY)
     lgfx::Panel_ST7789  _panel_st7789;
     lgfx::Panel_GC9A01  _panel_gc9a01;
     lgfx::Panel_ILI9341 _panel_ili9341;
     lgfx::Panel_ILI9488 _panel_ili9488;
     lgfx::Panel_ST7796  _panel_st7796;
+#endif
+    lgfx::Panel_ST7735S _panel_st7735;
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
 
 public:
     LGFX(TFTDriver driver = TFTDriver::ST7789) {
+#if defined(TFT_COMPACT_ONLY)
+        driver = TFTDriver::ST7735;  // only panel built in (see kTftCompactOnly)
+#endif
         // SPI bus — WROOM uses VSPI (PN5180 on HSPI). Capability-enabled
         // single-SPI boards share SPI2 with NFC; disabled targets do not link LGFX.
         {
@@ -172,7 +212,7 @@ public:
             cfg.spi_host   = VSPI_HOST;
 #endif
             cfg.spi_mode   = 0;
-            cfg.freq_write = 40000000;
+            cfg.freq_write = (driver == TFTDriver::ST7735) ? ST7735_SPI_HZ : 40000000;
             cfg.freq_read  = 16000000;
             cfg.pin_sclk   = PIN_TFT_SCLK;
             cfg.pin_mosi   = PIN_TFT_MOSI;
@@ -192,6 +232,9 @@ public:
         }
 
         lgfx::Panel_Device* panel = nullptr;
+#if defined(TFT_COMPACT_ONLY)
+        panel = &_panel_st7735;
+#else
         if (driver == TFTDriver::GC9A01) {
             panel = &_panel_gc9a01;
         } else if (driver == TFTDriver::ILI9341) {
@@ -200,9 +243,12 @@ public:
             panel = &_panel_ili9488;
         } else if (driver == TFTDriver::ST7796) {
             panel = &_panel_st7796;
+        } else if (driver == TFTDriver::ST7735) {
+            panel = &_panel_st7735;
         } else {
             panel = &_panel_st7789;
         }
+#endif
 
         panel->setBus(&_bus_instance);
 
@@ -227,6 +273,13 @@ public:
                 cfg.panel_height  = 480;
                 cfg.offset_x      = 0;
                 cfg.offset_y      = 0;
+            } else if (driver == TFTDriver::ST7735) {
+                cfg.memory_width  = 128;
+                cfg.memory_height = 160;
+                cfg.panel_width   = 128;
+                cfg.panel_height  = 160;
+                cfg.offset_x      = ST7735_OFFSET_X;
+                cfg.offset_y      = ST7735_OFFSET_Y;
             } else {
                 cfg.memory_width  = 240;
                 cfg.memory_height = 240;
@@ -247,9 +300,9 @@ public:
             cfg.dummy_read_bits  = 1;
             cfg.readable     = false;
             cfg.invert       = (driver == TFTDriver::ILI9341 || driver == TFTDriver::ILI9488 ||
-                                driver == TFTDriver::ST7796)
+                                driver == TFTDriver::ST7796 || driver == TFTDriver::ST7735)
                                    ? false : true;
-            cfg.rgb_order    = false;
+            cfg.rgb_order    = (driver == TFTDriver::ST7735);  // BGR glass
             cfg.dlen_16bit   = false;
 #if defined(BOARD_SHARED_SPI)
             cfg.bus_shared   = true;

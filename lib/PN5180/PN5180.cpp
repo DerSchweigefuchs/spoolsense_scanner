@@ -463,6 +463,25 @@ bool PN5180::mfcAuthenticate(const uint8_t *key, uint8_t keyType, uint8_t blockN
   return ok && (response == 0x00);
 }
 
+// How long setRF_on/off wait for the TX_RFON/TX_RFOFF transition IRQ. Some
+// modules never raise it (C3 SuperMini bench rig: both waits timed out on
+// every scan cycle although tags then read fine), which stretched the 50 ms
+// scan loop to ~1.25 s. Boards can shorten it with -DPN5180_RF_SWITCH_TIMEOUT_MS.
+#ifndef PN5180_RF_SWITCH_TIMEOUT_MS
+#define PN5180_RF_SWITCH_TIMEOUT_MS 500
+#endif
+
+// Rate-limited timeout log: with a short timeout the miss repeats every scan
+// cycle, so print the first one and then every 100th with a running count.
+static void logRfSwitchTimeout(const char* which, uint32_t& count,
+                               uint32_t rfStatus, uint32_t irqStatus) {
+  count++;
+  if (count == 1 || count % 100 == 0) {
+    Serial.printf("PN5180: TIMEOUT %s (x%lu) RF_STATUS=0x%08lX IRQ_STATUS=0x%08lX\n", which,
+                  (unsigned long)count, (unsigned long)rfStatus, (unsigned long)irqStatus);
+  }
+}
+
 /*
  * RF_ON - 0x16
  * This command is used to switch on the internal RF field. If enabled the TX_RFON_IRQ is
@@ -488,8 +507,9 @@ bool PN5180::setRF_on() {
       if (readRegister(RF_STATUS, &rfStatus) && (rfStatus & (1UL << 20))) {
         return true;  // TX_RF_STATUS: field is on
       }
-      if (millis() - t > 500) {
-        Serial.println("PN5180: TIMEOUT TX_RFON_IRQ");
+      if (millis() - t > PN5180_RF_SWITCH_TIMEOUT_MS) {
+        static uint32_t rfOnTimeouts = 0;
+        logRfSwitchTimeout("TX_RFON_IRQ", rfOnTimeouts, rfStatus, getIRQStatus());
         return false;
       }
     }
@@ -519,8 +539,9 @@ bool PN5180::setRF_off() {
       if (readRegister(RF_STATUS, &rfStatus) && !(rfStatus & (1UL << 20))) {
         return true;  // field is off
       }
-      if (millis() - t > 500) {
-        Serial.println("PN5180: TIMEOUT TX_RFOFF_IRQ");
+      if (millis() - t > PN5180_RF_SWITCH_TIMEOUT_MS) {
+        static uint32_t rfOffTimeouts = 0;
+        logRfSwitchTimeout("TX_RFOFF_IRQ", rfOffTimeouts, rfStatus, getIRQStatus());
         return false;
       }
     }

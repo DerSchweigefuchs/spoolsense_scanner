@@ -278,7 +278,7 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                 </label>
               </div>
               <div class="toggle-row">
-                <span id="tft_enabled_label" class="toggle-label">TFT Display (240x240)</span>
+                <span id="tft_enabled_label" class="toggle-label">TFT Display</span>
                 <label class="toggle-switch">
                   <input type="checkbox" id="tft_enabled" aria-labelledby="tft_enabled_label" />
                   <span class="toggle-track"></span>
@@ -292,6 +292,7 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                   <option value="ili9341">ILI9341 (240&times;320)</option>
                   <option value="ili9488">ILI9488 (320&times;480)</option>
                   <option value="st7796">ST7796 (320&times;480)</option>
+                  <option value="st7735">ST7735 (128&times;160)</option>
                 </select>
               </div>
             </div>
